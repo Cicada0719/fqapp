@@ -138,6 +138,12 @@ dependencies {
     implementation("androidx.media3:media3-common:$media3Version")
     implementation("androidx.media3:media3-datasource:$media3Version")
 
+    // MediaStyle + MediaSessionCompat for the listen-mode foreground notification.
+    // Without a media session the notification is a plain one: on Android 12+ its
+    // action buttons stay hidden until the user expands it, and the app never shows
+    // up in the system media controls (Quick Settings card, lock screen, headset keys).
+    implementation("androidx.media:media:1.7.0")
+
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.mockito:mockito-core:5.23.0")
 }

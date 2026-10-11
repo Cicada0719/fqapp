@@ -8,4 +8,5 @@
     <string name="listen_play">播放</string>
     <string name="listen_pause">暂停</string>
     <string name="listen_next">下一章</string>
+    <string name="listen_stop">关闭</string>
 </resources>

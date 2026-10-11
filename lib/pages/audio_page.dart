@@ -419,8 +419,9 @@ class _AudioPageState extends State<AudioPage> with WidgetsBindingObserver {
       unawaited(NativePlayer.stopListenForeground());
       return;
     }
+    final player = _player;
     final isPlaying =
-        (_player?.playing ?? false) && _wantPlay && !_completed && !_loading;
+        (player?.playing ?? false) && _wantPlay && !_completed && !_loading;
     unawaited(
       NativePlayer.startListenForeground(
         title: _title,
@@ -428,6 +429,10 @@ class _AudioPageState extends State<AudioPage> with WidgetsBindingObserver {
         playing: isPlaying,
         hasPrev: _index > 0,
         hasNext: _index < _chapters.length - 1,
+        // 位置 + 倍速交给系统外推，媒体卡片的进度条才会动；总时长是两侧时间的来源。
+        positionMs: player?.position.inMilliseconds ?? 0,
+        durationMs: _duration.inMilliseconds,
+        speed: _rate,
       ),
     );
   }
@@ -615,7 +620,10 @@ class _AudioPageState extends State<AudioPage> with WidgetsBindingObserver {
       if (!_current(generation, player)) return;
       _syncForeground();
       _saveTimer = Timer.periodic(const Duration(seconds: 5), (_) {
-        if (player.playing) unawaited(_persistProgress());
+        if (!player.playing) return;
+        unawaited(_persistProgress());
+        // 每 5 秒回一次真实位置：系统进度条靠外推前进，缓冲/卡顿时会跑偏。
+        _syncForeground();
       });
       _syncListenClock();
     } catch (error) {
@@ -780,6 +788,8 @@ class _AudioPageState extends State<AudioPage> with WidgetsBindingObserver {
           _position.value = _boundedPosition(_position.value, duration);
         });
         _publishReadAlong();
+        // 总时长是系统媒体卡片两侧时间的来源，一拿到就得同步一次。
+        _syncForeground();
       }),
       player.playingStream.listen((playing) {
         if (!_current(generation, player)) return;
@@ -1009,6 +1019,7 @@ class _AudioPageState extends State<AudioPage> with WidgetsBindingObserver {
       _position.value = target;
       _publishReadAlong();
       await _persistProgress();
+      _syncForeground();
     } catch (error) {
       _fail(error, generation);
     }
@@ -1024,6 +1035,7 @@ class _AudioPageState extends State<AudioPage> with WidgetsBindingObserver {
       await player.setRate(rate);
       if (!_current(generation, player)) return;
       await _persistProgress();
+      _syncForeground();
     } catch (error) {
       _fail(error, generation);
     }

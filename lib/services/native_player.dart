@@ -334,12 +334,17 @@ class NativePlayer {
         .timeout(_methodTimeout);
   }
 
+  /// [positionMs] / [durationMs] / [speed] 喂给系统媒体卡片：位置 + 倍速由系统外推，
+  /// 总时长决定卡片两侧的时间。缺省 0/0/1 时卡片显示 00:00，所以调用方要尽量给真实值。
   static Future<void> startListenForeground({
     required String title,
     required String episode,
     bool playing = true,
     bool hasPrev = true,
     bool hasNext = true,
+    int positionMs = 0,
+    int durationMs = 0,
+    double speed = 1,
   }) async {
     try {
       await _channel.invokeMethod<void>('startListenForeground', {
@@ -348,6 +353,9 @@ class NativePlayer {
         'playing': playing,
         'hasPrev': hasPrev,
         'hasNext': hasNext,
+        'positionMs': positionMs,
+        'durationMs': durationMs,
+        'speed': speed,
       });
     } catch (_) {
       // Best effort when channel/platform is unavailable or testing.
@@ -437,7 +445,11 @@ class NativePlayer {
       case 'duration':
         final value = event['value'];
         if (value is! num) return;
-        _duration = Duration(milliseconds: value.toInt());
+        final ms = value.toInt();
+        // ExoPlayer 未知时长回的是 C.TIME_UNSET（一个巨大负数），当「还不知道」处理，
+        // 别把它当成真实时长往下传。
+        if (ms <= 0) return;
+        _duration = Duration(milliseconds: ms);
         _durationCtrl.add(_duration);
       case 'playing':
         final value = event['value'];

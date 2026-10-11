@@ -59,6 +59,8 @@ class _ListenModePageState extends State<ListenModePage>
 
   static const _rates = <double>[0.75, 1.0, 1.25, 1.5, 2.0];
   double _rate = 1.0;
+  /// 拖动进度条时用于合并回写：只有最后一次拖动落地才同步通知。
+  int _seekSyncGeneration = 0;
 
   @override
   void initState() {
@@ -205,23 +207,32 @@ class _ListenModePageState extends State<ListenModePage>
     if (!AudioPreferences.instance.backgroundPlayback.value) {
       return _stopForeground();
     }
+    final player = _player;
     return NativePlayer.startListenForeground(
       title: widget.seriesTitle,
       episode: _episodeTitle(_index),
-      playing: _player?.playWhenReady ?? true,
+      playing: player?.playWhenReady ?? true,
       hasPrev: _index > 0,
       hasNext: _index < widget.episodes.length - 1,
+      // 位置 + 倍速交给系统外推；总时长决定媒体卡片两侧的时间。
+      positionMs: player?.position.inMilliseconds ?? 0,
+      durationMs: player?.duration.inMilliseconds ?? 0,
+      speed: _rate,
     );
   }
 
   Future<void> _stopForeground() => NativePlayer.stopListenForeground();
 
-  void _seekTo(double value) {
+  Future<void> _seekTo(double value) async {
     final player = _player;
     if (player == null || player.duration.inMilliseconds <= 0) return;
-    unawaited(
-      player.seek(Duration(milliseconds: (value * player.duration.inMilliseconds).round())),
+    final generation = ++_seekSyncGeneration;
+    await player.seek(
+      Duration(milliseconds: (value * player.duration.inMilliseconds).round()),
     );
+    // 拖动是连续触发的：只有最后一次落地才回写通知，否则会刷爆前台服务。
+    if (!mounted || generation != _seekSyncGeneration) return;
+    await _startForeground();
   }
 
   void _exitWithResult() =>
@@ -377,6 +388,8 @@ class _ListenModePageState extends State<ListenModePage>
         await _player?.setRate(rate);
         await PlayerPreferences.savePlaybackRate(rate);
         if (mounted) setState(() => _rate = rate);
+        // 倍速是系统进度条外推的乘数，改了就得同步一次。
+        unawaited(_startForeground());
       },
       borderRadius: BorderRadius.circular(14),
       child: Container(

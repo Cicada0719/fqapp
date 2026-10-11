@@ -293,6 +293,19 @@ class NativePlayerPlugin internal constructor(
                     putExtra(ListenKeepAliveService.EXTRA_PLAYING, call.argument<Boolean>("playing") ?: true)
                     putExtra(ListenKeepAliveService.EXTRA_HAS_PREV, call.argument<Boolean>("hasPrev") ?: true)
                     putExtra(ListenKeepAliveService.EXTRA_HAS_NEXT, call.argument<Boolean>("hasNext") ?: true)
+                    // 进度条与两侧时间全靠这三个值；漏传就等于永远上报 0/0。
+                    putExtra(
+                        ListenKeepAliveService.EXTRA_POSITION_MS,
+                        call.argument<Number>("positionMs")?.toLong() ?: 0L,
+                    )
+                    putExtra(
+                        ListenKeepAliveService.EXTRA_DURATION_MS,
+                        call.argument<Number>("durationMs")?.toLong() ?: 0L,
+                    )
+                    putExtra(
+                        ListenKeepAliveService.EXTRA_SPEED,
+                        call.argument<Number>("speed")?.toFloat() ?: 1f,
+                    )
                 }
                 try {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -438,7 +451,10 @@ class NativePlayerPlugin internal constructor(
                     Player.STATE_BUFFERING -> sendEvent(playerId, "buffering", true)
                     Player.STATE_READY -> {
                         sendEvent(playerId, "buffering", false)
-                        sendEvent(playerId, "duration", player.duration)
+                        // 时长此刻常常还没拿到（C.TIME_UNSET）；真拿到才发，Dart 侧才认。
+                        if (player.duration != C.TIME_UNSET) {
+                            sendEvent(playerId, "duration", player.duration)
+                        }
                     }
                     Player.STATE_ENDED -> {
                         // The periodic updater stops with isPlaying. Publish
@@ -517,12 +533,24 @@ class NativePlayerPlugin internal constructor(
     private fun startPositionUpdates(playerId: Int) {
         val instance = players[playerId] ?: return
         instance.positionUpdater?.let(handler::removeCallbacks)
+        // 时长常常在 STATE_READY 之后才拿到（那一刻上报的是 C.TIME_UNSET），而 STATE_READY
+        // 每个媒体项只来一次——所以这里补发「真的拿到了」的时长，否则系统媒体卡片右侧
+        // 永远是 00:00。
+        var reportedDurationMs = -1L
         val updater = object : Runnable {
             override fun run() {
                 val current = players[playerId] ?: return
                 val player = current.player
                 if (player.isPlaying) {
                     sendEvent(playerId, "position", player.currentPosition)
+                    val durationMs = player.duration
+                    if (durationMs != C.TIME_UNSET &&
+                        durationMs > 0 &&
+                        durationMs != reportedDurationMs
+                    ) {
+                        reportedDurationMs = durationMs
+                        sendEvent(playerId, "duration", durationMs)
+                    }
                     handler.postDelayed(this, 200)
                 } else {
                     current.positionUpdater = null
