@@ -1,7 +1,7 @@
 //! Video endpoints: the multi-quality video resolver plus the short-drama
 //! series detail and episode-list endpoints.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use base64::Engine;
@@ -68,10 +68,20 @@ fn handle_video<'a>(ctx: &'a Ctx, params: &'a Params) -> BoxFuture<'a, ApiResult
         }
 
         let stream_mode = params.get_str("mode") == "stream";
-        let raw = if stream_mode {
-            fetch_shortplay_video_model(ctx, &video_id).await?
+        // 短剧 stream 仍以 shortplay 模型选流，但清晰度列表要合并两条接口：
+        // 顶档（1080p）只出现在 phoenix 模型的 `fallback_api` 列表里，而两条
+        // 接口的编码分布并不相同——shortplay 各档是 h265，phoenix 的低档是解不
+        // 了的 bytevc2（实测 2026-10-12 同一集对拍）。二选一必然少档：只信
+        // shortplay 会丢 1080P，只信 phoenix 会让低档被编码门整片丢掉。
+        // 两个请求互不依赖，并发发出，不额外占用一个往返。
+        let (raw, phoenix_raw) = if stream_mode {
+            let (shortplay, phoenix) = tokio::join!(
+                fetch_shortplay_video_model(ctx, &video_id),
+                fetch_phoenix_video_model(ctx, &video_id),
+            );
+            (shortplay?, phoenix.ok())
         } else {
-            fetch_phoenix_video_model(ctx, &video_id).await?
+            (fetch_phoenix_video_model(ctx, &video_id).await?, None)
         };
 
         let (video_url, content_key) = match resolve_video_source(ctx, &raw).await {
@@ -92,7 +102,7 @@ fn handle_video<'a>(ctx: &'a Ctx, params: &'a Params) -> BoxFuture<'a, ApiResult
             "video_id": video_id,
             // 全量兼容档（高→低）。官方面板按该列表渲染清晰度行；空数组
             // 表示单流，客户端隐藏清晰度入口。
-            "variants": extract_stream_variants(ctx, &raw).await,
+            "variants": extract_stream_variants(ctx, &raw, phoenix_raw.as_deref()).await,
         });
         if stream_mode {
             return Ok(source);
@@ -340,65 +350,99 @@ fn variant_display_name(height: i64) -> String {
     }
 }
 
-/// All playable variants of the first encrypted short-play video model,
-/// best-quality first (official panel lists resolutions high→low,
+/// Every playable variant across the given response bodies, best-quality first
+/// (official panel lists resolutions high→low,
 /// `ShortSeriesMorePanelDialogV2$d$C0025d.a()` with `CollectionsKt.reversed`).
 /// The bytevc2 gate applies unchanged: rejected codecs never become variants.
-/// When the primary model yields no list, the fallback video-info endpoint is
-/// queried the same way `resolve_video_source` does. Returns `[]` when the
-/// response has no multi-variant model — the client then hides the quality
-/// row entirely (official `oi3/k.P()` gate).
-async fn extract_stream_variants(ctx: &Ctx, raw: &[u8]) -> Vec<Value> {
-    let Ok(resp) = serde_json::from_slice::<Value>(raw) else {
-        return Vec::new();
-    };
-    let Some(data) = resp.get("data").and_then(|d| d.as_object()) else {
-        return Vec::new();
-    };
-    for model in video_models(data) {
-        // NOTE: 不用 video_model_encrypted() 做前置——它只认数组形状的
-        // video_list；实测漫剧（series 7686494169098898456）的 video_list 是
-        // object 且未标 encrypt，但每档照常带 spade_a/kid，选流门照常适用。
-        let primary = variant_rows(
-            model.get("video_list").and_then(|v| v.as_object()),
-            model
-                .get("key_seed")
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
-                .and_then(|s| audio_b64_decode(s).ok()),
-        );
-        if !primary.is_empty() {
-            return primary;
-        }
-        let fallback_url = fallback_api_url(&model);
-        if fallback_url.is_empty() {
-            continue;
-        }
-        let Some(fallback_data) = fetch_fallback_video_info(ctx, &fallback_url).await else {
+///
+/// Each body's `video_list` and its `fallback_api` list are merged, and several
+/// bodies are merged together, because no single list is complete and they are
+/// not interchangeable: 实测 2026-10-12 同一集对拍——shortplay 模型的自身列表到
+/// 720P 为止（各档 h265），phoenix 模型的 fallback 才有 1080p（低档是解不了的
+/// bytevc2）。只看一份会静默少档。Returns `[]` when no body yields a variant —
+/// the client then hides the quality row entirely (official `oi3/k.P()` gate).
+async fn extract_stream_variants(ctx: &Ctx, raw: &[u8], extra: Option<&[u8]>) -> Vec<Value> {
+    let mut scored = Vec::new();
+    for body in std::iter::once(raw).chain(extra) {
+        let Ok(resp) = serde_json::from_slice::<Value>(body) else {
             continue;
         };
-        let list = fallback_data
-            .get("video_info")
-            .and_then(|v| v.get("data"))
-            .and_then(|v| v.as_object());
-        let key_seed = list
-            .and_then(|d| d.get("key_seed"))
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-            .and_then(|s| audio_b64_decode(s).ok());
-        let list = list
-            .and_then(|d| d.get("video_list"))
-            .and_then(|v| v.as_object());
-        let rows = variant_rows(list, key_seed);
-        if !rows.is_empty() {
-            return rows;
+        let Some(data) = resp.get("data").and_then(|d| d.as_object()) else {
+            continue;
+        };
+        for model in video_models(data) {
+            // NOTE: 不用 video_model_encrypted() 做前置——它只认数组形状的
+            // video_list；实测漫剧（series 7686494169098898456）的 video_list 是
+            // object 且未标 encrypt，但每档照常带 spade_a/kid，选流门照常适用。
+            scored.extend(variant_rows_scored(
+                model.get("video_list").and_then(|v| v.as_object()),
+                model
+                    .get("key_seed")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .and_then(|s| audio_b64_decode(s).ok()),
+            ));
+            scored.extend(fallback_variant_rows(ctx, &model).await);
         }
     }
-    Vec::new()
+    merge_variant_rows(scored)
 }
 
-/// Builds the sorted variant list from one `video_list` object.
-fn variant_rows(video_list: Option<&Map<String, Value>>, key_seed: Option<Vec<u8>>) -> Vec<Value> {
+/// The model's `fallback_api` list as scored rows; empty when the model has no
+/// fallback URL or it cannot be fetched. Same endpoint `resolve_video_source`
+/// falls back to.
+async fn fallback_variant_rows(ctx: &Ctx, model: &Map<String, Value>) -> Vec<(i64, Value)> {
+    let fallback_url = fallback_api_url(model);
+    if fallback_url.is_empty() {
+        return Vec::new();
+    }
+    let Some(fallback_data) = fetch_fallback_video_info(ctx, &fallback_url).await else {
+        return Vec::new();
+    };
+    let list = fallback_data
+        .get("video_info")
+        .and_then(|v| v.get("data"))
+        .and_then(|v| v.as_object());
+    let key_seed = list
+        .and_then(|d| d.get("key_seed"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .and_then(|s| audio_b64_decode(s).ok());
+    let list = list
+        .and_then(|d| d.get("video_list"))
+        .and_then(|v| v.as_object());
+    variant_rows_scored(list, key_seed)
+}
+
+/// Ranks rows best-first and keeps one row per resolution. A resolution offered
+/// by several lists renders once, and the list that came first wins — so the
+/// tier the player actually selected stays in the list and the panel keeps
+/// highlighting it (the panel matches the current tier by URL). Rows without a
+/// resolution carry no label and are dropped.
+fn merge_variant_rows(scored: Vec<(i64, Value)>) -> Vec<Value> {
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut out: Vec<(i64, Value)> = Vec::with_capacity(scored.len());
+    for (score, row) in scored {
+        let name = row
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        if name.is_empty() || !seen.insert(name) {
+            continue;
+        }
+        out.push((score, row));
+    }
+    out.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
+    out.into_iter().map(|(_, row)| row).collect()
+}
+
+/// Builds the variant rows from one `video_list` object, keeping the quality
+/// score so callers can merge several upstream lists before ranking them.
+fn variant_rows_scored(
+    video_list: Option<&Map<String, Value>>,
+    key_seed: Option<Vec<u8>>,
+) -> Vec<(i64, Value)> {
     let Some(video_list) = video_list else {
         return Vec::new();
     };
@@ -426,7 +470,7 @@ fn variant_rows(video_list: Option<&Map<String, Value>>, key_seed: Option<Vec<u8
         })
         .collect();
     rows.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
-    rows.into_iter().map(|(_, v)| v).collect()
+    rows
 }
 
 pub(crate) fn decode_video_model_str(s: &str) -> Option<Map<String, Value>> {
@@ -1777,7 +1821,10 @@ mod spade_vectors {
                 "spade_a": "orws8mOJLdlTlhnvZZQr32GULuhXkBvtUpAf7GWQKNtUohyPjw=="
             }
         });
-        let rows = variant_rows(video_list.as_object(), Some(b"AAAA".to_vec()));
+        let rows = merge_variant_rows(variant_rows_scored(
+            video_list.as_object(),
+            Some(b"AAAA".to_vec()),
+        ));
         let names: Vec<&str> = rows.iter().map(|v| v["name"].as_str().unwrap()).collect();
         assert_eq!(names, ["720P", "540P", "360P"]);
         for row in &rows {
@@ -1984,7 +2031,61 @@ mod cenc_sample_fixture {
         decrypt_cached_video_if_needed(&path, &key).expect("second pass");
         let twice = std::fs::read(&path).expect("read twice");
         assert_eq!(once, twice, "the second pass must be a no-op");
-
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn merge_variant_rows_keeps_the_fallback_only_top_tier() {
+        // 实测形状（2026-10-12）：主列表到 720P 为止，fallback 列表多一个
+        // 1080p。合并后 1080P 必须在列表里，且同档不重复。
+        const SPADE: &str = "orws8mOJLdlTlhnvZZQr32GULuhXkBvtUpAf7GWQKNtUohyPjw==";
+        let primary = json!({
+            "video_1": { "main_url": "https://example.test/360.mp4", "vwidth": 360, "vheight": 640,
+                "codec_type": "bytevc1", "spade_a": SPADE },
+            "video_2": { "main_url": "https://example.test/720.mp4", "vwidth": 720, "vheight": 1280,
+                "codec_type": "bytevc1", "spade_a": SPADE }
+        });
+        let fallback = json!({
+            "video_1": { "main_url": "https://example.test/720.mp4", "vwidth": 720, "vheight": 1280,
+                "codec_type": "bytevc1", "spade_a": SPADE },
+            "video_2": { "main_url": "https://example.test/1080.mp4", "vwidth": 1080, "vheight": 1920,
+                "codec_type": "bytevc1", "spade_a": SPADE }
+        });
+        let mut scored = variant_rows_scored(primary.as_object(), Some(b"AAAA".to_vec()));
+        scored.extend(variant_rows_scored(
+            fallback.as_object(),
+            Some(b"AAAA".to_vec()),
+        ));
+        let rows = merge_variant_rows(scored);
+        let names: Vec<&str> = rows.iter().map(|v| v["name"].as_str().unwrap()).collect();
+        assert_eq!(
+            names,
+            ["1080P", "720P", "360P"],
+            "fallback-only tier must be merged in and duplicates collapsed"
+        );
+        for row in &rows {
+            assert_eq!(row["key_hex"].as_str().unwrap().len(), 32);
+        }
+    }
+
+    #[test]
+    fn merge_variant_rows_still_drops_bytevc2_from_the_fallback_list() {
+        // fallback 列表里 1080p 常是 bytevc1、低档是 bytevc2（实测 4/6 部剧）。
+        // 合并不得把 bytevc2 带进面板。
+        const SPADE: &str = "orws8mOJLdlTlhnvZZQr32GULuhXkBvtUpAf7GWQKNtUohyPjw==";
+        let fallback = json!({
+            "video_1": { "main_url": "https://example.test/1080-vvc.mp4", "vwidth": 1080, "vheight": 1920,
+                "codec_type": "bytevc2", "spade_a": SPADE },
+            "video_2": { "main_url": "https://example.test/1080-hvc1.mp4", "vwidth": 1080, "vheight": 1920,
+                "codec_type": "bytevc1", "spade_a": SPADE },
+            "video_3": { "main_url": "https://example.test/720-vvc.mp4", "vwidth": 720, "vheight": 1280,
+                "codec_type": "bytevc2", "spade_a": SPADE }
+        });
+        let rows = merge_variant_rows(variant_rows_scored(
+            fallback.as_object(),
+            Some(b"AAAA".to_vec()),
+        ));
+        let names: Vec<&str> = rows.iter().map(|v| v["name"].as_str().unwrap()).collect();
+        assert_eq!(names, ["1080P"], "bytevc2 rows must never reach the panel");
     }
 }

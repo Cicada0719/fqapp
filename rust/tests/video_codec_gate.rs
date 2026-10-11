@@ -248,3 +248,97 @@ async fn successful_download_keeps_the_local_source_contract() {
         b"video fixture"
     );
 }
+
+/// The shortplay list stops at 720P; the model's `fallback_api` list carries
+/// the top tier. The stream response must merge both, or the quality panel
+/// silently loses a row (measured 2026-10-12 on the live upstream).
+#[tokio::test]
+async fn stream_variants_merge_the_fallback_list_so_the_top_tier_survives() {
+    let upstream = MockUpstream::start(|req| {
+        if req.path == "/fallback" {
+            return MockReply::json(json!({"video_info": {"data": {
+                "key_seed": "AAAA",
+                "video_list": {
+                    "video_1": {"main_url": "https://example.invalid/360.mp4",
+                        "vwidth": 360, "vheight": 640, "codec_type": "bytevc1", "spade_a": SPADE_A},
+                    "video_2": {"main_url": "https://example.invalid/720.mp4",
+                        "vwidth": 720, "vheight": 1280, "codec_type": "bytevc1", "spade_a": SPADE_A},
+                    "video_3": {"main_url": "https://example.invalid/1080.mp4",
+                        "vwidth": 1080, "vheight": 1920, "codec_type": "bytevc1", "spade_a": SPADE_A}
+                }
+            }}}));
+        }
+        MockReply::json(json!({"data": {"video_model": {
+            "key_seed": "AAAA",
+            "fallback_api": "https://example.invalid/fallback",
+            "video_list": {
+                "video_1": {"main_url": "https://example.invalid/360.mp4",
+                    "vwidth": 360, "vheight": 640, "codec_type": "bytevc1", "spade_a": SPADE_A},
+                "video_2": {"main_url": "https://example.invalid/720.mp4",
+                    "vwidth": 720, "vheight": 1280, "codec_type": "bytevc1", "spade_a": SPADE_A}
+            }
+        }}}))
+    })
+    .await;
+    let dir = TempDir::new("video-variant-merge");
+    let server = build_server(&dir, Some(upstream.origin.clone()), &[], &[], &pool_json(5)).await;
+    let (status, body) = request_video(&server, "mode=stream").await;
+    assert_eq!(status, 200, "{body}");
+    let names: Vec<&str> = body["variants"]
+        .as_array()
+        .expect("variants array")
+        .iter()
+        .map(|v| v["name"].as_str().expect("variant name"))
+        .collect();
+    assert_eq!(names, ["1080P", "720P", "360P"], "{body}");
+    assert_eq!(
+        body["variants"][0]["url"],
+        "https://example.invalid/1080.mp4"
+    );
+    assert_eq!(
+        body["variants"][0]["key_hex"].as_str().expect("key").len(),
+        32,
+        "{body}"
+    );
+    assert!(upstream.requests().iter().any(|r| r.path == "/fallback"));
+}
+
+/// The fallback list's low tiers are often bytevc2. Merging must not smuggle
+/// them past the codec gate.
+#[tokio::test]
+async fn stream_variants_do_not_merge_bytevc2_tiers() {
+    let upstream = MockUpstream::start(|req| {
+        if req.path == "/fallback" {
+            return MockReply::json(json!({"video_info": {"data": {
+                "key_seed": "AAAA",
+                "video_list": {
+                    "video_1": {"main_url": "https://example.invalid/1080.mp4",
+                        "vwidth": 1080, "vheight": 1920, "codec_type": "bytevc1", "spade_a": SPADE_A},
+                    "video_2": {"main_url": REJECTED_URL,
+                        "vwidth": 720, "vheight": 1280, "codec_type": "bytevc2", "spade_a": SPADE_A}
+                }
+            }}}));
+        }
+        MockReply::json(json!({"data": {"video_model": {
+            "key_seed": "AAAA",
+            "fallback_api": "https://example.invalid/fallback",
+            "video_list": {
+                "video_1": {"main_url": ALLOWED_URL,
+                    "vwidth": 360, "vheight": 640, "codec_type": "bytevc1", "spade_a": SPADE_A}
+            }
+        }}}))
+    })
+    .await;
+    let dir = TempDir::new("video-variant-gate");
+    let server = build_server(&dir, Some(upstream.origin.clone()), &[], &[], &pool_json(5)).await;
+    let (status, body) = request_video(&server, "mode=stream").await;
+    assert_eq!(status, 200, "{body}");
+    let names: Vec<&str> = body["variants"]
+        .as_array()
+        .expect("variants array")
+        .iter()
+        .map(|v| v["name"].as_str().expect("variant name"))
+        .collect();
+    assert_eq!(names, ["1080P", "360P"], "{body}");
+    assert!(!body.to_string().contains(REJECTED_URL), "{body}");
+}
