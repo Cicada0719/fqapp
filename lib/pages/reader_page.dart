@@ -223,6 +223,7 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
   DateTime _readStart = DateTime.now();
   bool _sessionActive = false;
   bool _appActive = true;
+  bool _routeCurrent = false;
   bool _changingChapter = false;
 
   /// Height of the reader's own bottom toolbar (目录/夜间/听书/设置) as measured
@@ -344,6 +345,25 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
       unawaited(_ensureCatalog().catchError((_) {}));
       _load();
     }
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final current = ModalRoute.isCurrentOf(context) ?? true;
+    if (_routeCurrent == current) return;
+    _routeCurrent = current;
+    _syncSystemBars();
+  }
+
+  // Note: Route/lifecycle ownership and SDK 36 compatibility; see
+  // .agents/notes/implemented/bug-fix/2026-10-12-reader-system-bars.md.
+  void _syncSystemBars() {
+    unawaited(
+      _device.setImmersive(
+        _appActive && _routeCurrent && widget.chapters.isNotEmpty,
+      ),
+    );
   }
 
   Future<void> _loadPreferences() async {
@@ -895,6 +915,7 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
       unawaited(_persistProgress());
     } else if (resumed && !_appActive) {
       _appActive = true;
+      _syncSystemBars();
       unawaited(_refreshDevice());
       if (!_loading && _content.isNotEmpty) {
         _readStart = DateTime.now();

@@ -7,12 +7,17 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.net.Uri
 import android.os.BatteryManager
-import android.view.WindowManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.provider.OpenableColumns
 import android.provider.Settings
+import android.view.ViewTreeObserver
+import android.view.WindowManager
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.embedding.engine.plugins.activity.ActivityAware
 import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
@@ -37,6 +42,10 @@ class ReaderDevicePlugin : FlutterPlugin, ActivityAware,
     private var receiverRegistered = false
     private var session: String? = null
     private val brightness = ReaderBrightnessSession()
+    private val systemBars = ReaderSystemBarsSession()
+    private val windowFocusListener = ViewTreeObserver.OnWindowFocusChangeListener { focused ->
+        if (focused) systemBars.reapply()
+    }
     private var pendingFont: MethodChannel.Result? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     private val filesExecutor = Executors.newSingleThreadExecutor()
@@ -68,18 +77,52 @@ class ReaderDevicePlugin : FlutterPlugin, ActivityAware,
                     window.attributes = attributes
                 }
         })
+        val decor = window.decorView
+        val controller = WindowCompat.getInsetsController(window, decor)
+        val types = WindowInsetsCompat.Type.systemBars()
+        systemBars.attach(object : ReaderSystemBarsSession.Window {
+            override fun snapshot(): ReaderSystemBarsSession.State {
+                val insets = ViewCompat.getRootWindowInsets(decor)
+                var visible = 0
+                for (type in listOf(
+                    WindowInsetsCompat.Type.statusBars(),
+                    WindowInsetsCompat.Type.navigationBars(),
+                    WindowInsetsCompat.Type.captionBar(),
+                )) {
+                    if (insets == null || insets.isVisible(type)) visible = visible or type
+                }
+                return ReaderSystemBarsSession.State(visible, controller.systemBarsBehavior)
+            }
+
+            override fun hide() {
+                controller.systemBarsBehavior =
+                    WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                controller.hide(types)
+            }
+
+            override fun restore(state: ReaderSystemBarsSession.State) {
+                controller.systemBarsBehavior = state.behavior
+                controller.show(state.visibleTypes)
+                controller.hide(types and state.visibleTypes.inv())
+            }
+        })
+        decor.viewTreeObserver.addOnWindowFocusChangeListener(windowFocusListener)
     }
 
     override fun onReattachedToActivityForConfigChanges(binding: ActivityPluginBinding) =
         onAttachedToActivity(binding)
 
     override fun onDetachedFromActivityForConfigChanges() {
+        binding?.activity?.window?.decorView?.viewTreeObserver
+            ?.removeOnWindowFocusChangeListener(windowFocusListener)
+        systemBars.detach()
         brightness.detach()
         binding?.removeActivityResultListener(this)
         binding = null
     }
 
     override fun onDetachedFromActivity() {
+        systemBars.clear()
         brightness.clear()
         session = null
         cancelFontPicker()
@@ -119,6 +162,18 @@ class ReaderDevicePlugin : FlutterPlugin, ActivityAware,
             return
         }
         when (call.method) {
+            "setImmersive" -> {
+                if (call.argument<Boolean>("enabled") == true) {
+                    if (binding == null) {
+                        result.error("NO_ACTIVITY", "阅读界面尚未就绪", null)
+                        return
+                    }
+                    systemBars.open(id)
+                } else {
+                    systemBars.close(id)
+                }
+                result.success(null)
+            }
             "start", "setBrightness" -> {
                 if (binding == null) {
                     result.error("NO_ACTIVITY", "阅读界面尚未就绪", null)
@@ -139,10 +194,12 @@ class ReaderDevicePlugin : FlutterPlugin, ActivityAware,
                 }
             }
             "suspend" -> {
+                systemBars.close(id)
                 brightness.suspend(id)
                 result.success(null)
             }
             "stop" -> {
+                systemBars.close(id)
                 brightness.close(id)
                 if (session == id) session = null
                 result.success(null)

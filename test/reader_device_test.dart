@@ -79,6 +79,8 @@ void main() {
 
   test('a missing platform bridge does not break reader cleanup', () async {
     final device = ReaderDevice();
+    await device.setImmersive(true);
+    await device.setImmersive(false);
     expect(await device.start(followSystem: true, brightness: 0.5), isNull);
     expect(
       await device.setBrightness(followSystem: false, brightness: 0.5),
@@ -87,6 +89,38 @@ void main() {
     await device.suspend();
     await device.close();
   });
+
+  test(
+    'immersive requests share the cleanup session and cannot reopen after close',
+    () async {
+      final calls = <MethodCall>[];
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        calls.add(call);
+        return null;
+      });
+      final device = ReaderDevice();
+      await device.setImmersive(true);
+      await device.setImmersive(false);
+      await device.setImmersive(true);
+      await device.close();
+      await device.setImmersive(true);
+      expect(calls.map((call) => call.method), [
+        'setImmersive',
+        'setImmersive',
+        'setImmersive',
+        'stop',
+      ]);
+      expect(
+        calls.map((call) => call.arguments['session']).toSet(),
+        hasLength(1),
+      );
+      expect(calls.take(3).map((call) => call.arguments['enabled']), [
+        true,
+        false,
+        true,
+      ]);
+    },
+  );
 
   test(
     'unavailable battery values remain unknown instead of displaying zero',
