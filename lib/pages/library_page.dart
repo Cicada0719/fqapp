@@ -281,6 +281,12 @@ class _LibraryPageState extends State<LibraryPage> {
     );
   }
 
+  /// 空书架上的「查看离线缓存」入口：书架空不等于本地没内容。
+  void _openCachedBooks() => Navigator.push(
+    context,
+    MaterialPageRoute<void>(builder: (_) => const CachedBooksPage()),
+  );
+
   List<_ShelfEntry> get _visibleEntries {
     final entries = _tab == 0 ? _shelf : _browseHistory;
     final kind = _kindFilter;
@@ -764,7 +770,10 @@ class _LibraryPageState extends State<LibraryPage> {
     final entries = _visibleEntries;
     if (entries.isEmpty) {
       return _tab == 0 && _shelf.isEmpty
-          ? _EmptyShelf(onBrowse: widget.onBrowse)
+          ? _EmptyShelf(
+              onBrowse: widget.onBrowse,
+              onCachedBooks: _openCachedBooks,
+            )
           : const _EmptyHint(text: '未找到相关内容');
     }
     return switch (_layout) {
@@ -989,10 +998,14 @@ class _ShelfEntry {
 }
 
 /// 空书架（官方文案）：书架暂无书籍 + 去书城找书。
+///
+/// [onCachedBooks] 非空时多给一条「查看离线缓存」：书架空、又断网时
+/// 「去书城找书」是条死路，而用户手里可能正好有下载好的内容。
 class _EmptyShelf extends StatelessWidget {
   final VoidCallback? onBrowse;
+  final VoidCallback? onCachedBooks;
 
-  const _EmptyShelf({this.onBrowse});
+  const _EmptyShelf({this.onBrowse, this.onCachedBooks});
 
   @override
   Widget build(BuildContext context) {
@@ -1042,6 +1055,17 @@ class _EmptyShelf extends StatelessWidget {
               ),
             ),
           ),
+
+          if (onCachedBooks != null) ...[
+            const SizedBox(height: 10),
+            TextButton.icon(
+              key: const Key('shelf-cached-books-button'),
+              onPressed: onCachedBooks,
+              style: TextButton.styleFrom(foregroundColor: palette.muted),
+              icon: const Icon(LucideIcons.download, size: 16),
+              label: const Text('查看离线缓存'),
+            ),
+          ],
         ],
       ),
     );

@@ -450,6 +450,26 @@ void main() {
       expect(find.byType(ReaderPage, skipOffstage: false), findsNothing);
       await tester.pumpWidget(const SizedBox.shrink());
     });
+
+    testWidgets('空书架给出「查看离线缓存」入口', (tester) async {
+      await tester.pumpWidget(_app());
+      await tester.pumpAndSettle();
+      expect(find.text('书架暂无书籍'), findsOneWidget);
+      final entry = find.byKey(const Key('shelf-cached-books-button'));
+      expect(entry, findsOneWidget);
+      await tester.tap(entry);
+      // 缓存页要开真实 Hive box：真实文件 I/O 只在真实事件循环里跑得完，
+      // 交替「真实一帧 + pump」直到页面标题出现（同 _settlePageWrite 的做法）。
+      for (var i = 0; i < 40; i++) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 10)),
+        );
+        await tester.pump();
+        if (find.text('离线缓存').evaluate().isNotEmpty) break;
+      }
+      expect(find.text('离线缓存'), findsWidgets);
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
   });
 }
 

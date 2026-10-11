@@ -218,6 +218,55 @@ void main() {
     expect(find.text('从缓存阅读'), findsNothing);
   });
 
+  testWidgets('离线时目录还没回来就先给出「从缓存阅读」', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    final cache = MemoryChapterCache();
+    await cache.saveBook(
+      CachedBook(id: 'book', title: '测试书', chapters: _chapters),
+    );
+    await cache.write(
+      bookId: 'book',
+      chapterId: 'first',
+      title: '第一章',
+      text: '离线正文',
+    );
+    // 目录请求悬着不返回：弱网下页面停在 loading，错误卡片根本不会出现。
+    final pending = Completer<List<List<Chapter>>>();
+    addTearDown(() {
+      if (!pending.isCompleted) pending.complete(const []);
+    });
+    final observer = _RouteObserver();
+    await tester.pumpWidget(
+      MaterialApp(
+        navigatorObservers: [observer],
+        home: DetailPage(
+          item: _book,
+          chapterCache: cache,
+          readerStore: MemoryReaderStore(),
+          connectivity: () async => (online: false, metered: false),
+          detailLoader: (id, {String tab = '小说'}) async => {},
+          directoryLoader: (id, {String tab = '小说'}) => pending.future,
+        ),
+      ),
+    );
+    // loading 期间 spinner 一直在动，pumpAndSettle 会超时，只能手动 pump。
+    for (var i = 0; i < 5; i++) {
+      await tester.pump();
+    }
+    expect(find.text('正在加载书籍与目录'), findsOneWidget);
+    expect(find.text('从缓存阅读'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('detail_read_cached')));
+    for (var i = 0; i < 5; i++) {
+      await tester.pump();
+    }
+    final context = tester.element(find.byType(DetailPage));
+    expect(
+      (observer.lastRoute! as MaterialPageRoute).builder(context),
+      isA<ReaderPage>(),
+    );
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
   testWidgets('optional metadata failure keeps a usable directory visible', (
     tester,
   ) async {

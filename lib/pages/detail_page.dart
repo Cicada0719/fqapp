@@ -14,6 +14,7 @@ import '../services/api_client.dart';
 import '../services/audio_history.dart';
 import '../services/chapter_cache_store.dart';
 import '../services/chapter_download.dart';
+import '../services/connectivity_status.dart';
 import '../services/library_store.dart';
 import '../services/media_history_store.dart';
 import '../services/player_history.dart';
@@ -116,6 +117,9 @@ class DetailPage extends StatefulWidget {
   /// injectable like the other loaders so tests stay offline.
   final Future<String> Function(Chapter chapter)? chapterLoader;
 
+  /// 连通性探测。缺省走真实实现；注入后测试可完全离线。
+  final Future<ConnectivityView> Function()? connectivity;
+
   const DetailPage({
     super.key,
     required this.item,
@@ -127,6 +131,7 @@ class DetailPage extends StatefulWidget {
     this.readerStore,
     this.chapterCache,
     this.chapterLoader,
+    this.connectivity,
   });
 
   @override
@@ -256,6 +261,10 @@ class _DetailPageState extends State<DetailPage> {
       setState(() => _loading = false);
       return;
     }
+
+    // 离线时先摸清本地有没有整本缓存：详情页这条路离线必然失败，不该让用户
+    // 对着转圈等到目录请求超时。联网时直接返回，在线路径一次缓存都不查。
+    unawaited(_resolveCachedCatalogue(generation));
 
     // Detail and directory are independent. Short-drama IDs sometimes do
     // not have a legacy book-detail record, but their episode list is still
@@ -697,6 +706,22 @@ class _DetailPageState extends State<DetailPage> {
         ),
         const SizedBox(height: 16),
         Text('正在加载书籍与目录', style: TextStyle(color: palette.muted, fontSize: 13)),
+        // 离线时这条请求注定失败；本地有整本缓存就先把入口摆出来，不必让用户
+        // 对着转圈等到超时。与错误卡片共用同一个 key：两种状态互斥，不会同屏。
+        if (_cachedBook != null) ...[
+          const SizedBox(height: 16),
+          FilledButton.icon(
+            key: const Key('detail_read_cached'),
+            onPressed: _readCached,
+            style: FilledButton.styleFrom(
+              backgroundColor: HomePalette.accent,
+              foregroundColor: Colors.white,
+              minimumSize: const Size(110, 48),
+            ),
+            icon: const Icon(LucideIcons.book_open, size: 16),
+            label: const Text('从缓存阅读'),
+          ),
+        ],
       ],
     ),
   );
@@ -1090,6 +1115,19 @@ class _DetailPageState extends State<DetailPage> {
     } catch (_) {
       return null;
     }
+  }
+
+  /// 离线时提前查一次本地缓存：详情页这条路离线必然失败，不该等目录请求超时
+  /// 才把「从缓存阅读」给出来。联网时立即返回，在线路径一次缓存都不查。
+  Future<void> _resolveCachedCatalogue(int generation) async {
+    if (!_isBook) return;
+    final connectivity = await (widget.connectivity ?? currentConnectivity)();
+    if (connectivity.online || !mounted || generation != _loadGeneration) {
+      return;
+    }
+    final cached = await _cachedCatalogue();
+    if (cached == null || !mounted || generation != _loadGeneration) return;
+    setState(() => _cachedBook = cached);
   }
 
   Future<void> _readCached() async {
