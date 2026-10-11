@@ -12,7 +12,9 @@ import '../models/media_item.dart';
 import '../models/playlet_comment.dart';
 import '../models/series_detail.dart';
 import '../services/api_client.dart';
+import '../services/backend_transport.dart';
 import '../services/drama_mute_preferences.dart';
+import '../services/episode_source_cache.dart';
 import '../services/inline_video_playback.dart';
 
 import '../services/library_store.dart';
@@ -20,18 +22,25 @@ import '../services/native_player.dart';
 import '../services/player_history.dart';
 import '../services/player_style_config.dart';
 import '../services/shelf_store.dart';
+import '../services/short_series_font_scale.dart';
 import '../services/swipe_guide_store.dart';
 import '../services/user_facing_error.dart';
 import '../services/media_history_store.dart';
 import '../widgets/home/home_media_card.dart';
 import '../widgets/player/playlet_comment_panel.dart';
+import '../widgets/player/playlet_danmaku_layer.dart';
+import '../widgets/player/playlet_danmaku_loader.dart';
+import '../widgets/player/playlet_danmaku_settings.dart';
+import '../widgets/player/playlet_font_scale_sheet.dart';
 import '../widgets/player/playlet_hot_comment_bar.dart';
 import '../widgets/player/playlet_more_panel.dart';
 import '../widgets/player/playlet_more_panel_light.dart';
 import '../widgets/player/playlet_quick_catalog_sheet.dart';
 import '../widgets/player/player_video_layout.dart';
 import 'detail_page.dart';
+import 'drama_download_sheet.dart';
 import 'home_provider.dart';
+import 'listen_mode_page.dart';
 import 'player_page.dart';
 import 'search_page.dart';
 import 'series_detail_page.dart';
@@ -290,6 +299,26 @@ class _DramaPageState extends ConsumerState<DramaPage>
   bool _feedPanelOpen = false;
   bool _syncScheduled = false;
 
+  /// feed 清屏播放（官方面板「清屏播放」行的会话态，与全页 chrome 的
+  /// `_clearScreen` 同语义：不落盘，退出走面板的「退出清屏」行）。清屏
+  /// 只作用于在屏卡：渐变遮罩、信息层、进度条与静音药丸整批隐藏。
+  bool _feedClearScreen = false;
+
+  /// 面板「字体大小」行级联打开的字号弹层（官方 `jm3.t0.m`：先关面板
+  /// 再开弹层，`_modalOpen` 计账在弹层方法内部）。
+  bool _pendingFeedFontScale = false;
+
+  /// feed 弹幕（官方信息流同样渲染弹幕，面板有开关行）：时间轴、取数
+  /// 调度器与全局配置都复用播放页的那一套（CRIT-009 的时间字段约定在
+  /// 模型层已固化）。vid -> seriesId 随每次切集登记，取数时按 vid 取，
+  /// 在飞的旧请求不会拿到新剧的 seriesId。
+  final DanmakuTimeline _feedDanmaku = DanmakuTimeline();
+  bool _feedDanmakuEnabled = DanmakuPreference.defaultEnabled;
+  DanmakuSettings _feedDanmakuSettings = const DanmakuSettings();
+  final Map<String, String> _feedDanmakuSeriesIds = {};
+  BackendRequest? _feedDanmakuFlight;
+  Timer? _feedDanmakuTimer;
+
   /// 在屏卡的热评（官方 `SeriesHotCommentView`：holder 绑定时按剧拉评论
   /// 列表再本地筛「热评」，best-effort，拉不到就不显示行）。键为剧 id，
   /// 值先置空列表占位防止重复请求。
@@ -312,6 +341,28 @@ class _DramaPageState extends ConsumerState<DramaPage>
 
   late final InlineVideoPlayback _inline;
 
+  /// 弹幕取数调度器（与播放页同款单飞 + seek 优先语义）。取数实现把
+  /// seriesId 按 vid 回查，切剧的旧请求由调度器代际作废。
+  late final DanmakuLoader _feedDanmakuLoader = DanmakuLoader(
+    fetch: _fetchFeedDanmaku,
+    onLoad: (page) {
+      if (!mounted) return;
+      final focus = _inline.position.value.inMilliseconds;
+      setState(() {
+        final retention = _feedDanmaku.load(page, focusMs: focus);
+        if (retention.dropped) {
+          _feedDanmakuLoader.noteRetainedRange(
+            minOffsetMs: retention.minOffsetMs,
+            maxOffsetMs: retention.maxOffsetMs,
+            droppedBehind: retention.droppedBehind,
+            droppedAhead: retention.droppedAhead,
+            emptied: retention.emptied,
+          );
+        }
+      });
+    },
+  );
+
   DramaChannel get _current => _channels[_channel];
 
   @override
@@ -327,6 +378,18 @@ class _DramaPageState extends ConsumerState<DramaPage>
     // 预载冷启动静音设置（`_applyPlaybackPrefs` 在会话首卡建播放器时读取；
     // 官方 `video/l.java` 的 `e()`→`g()`，默认 false＝有声起播）。
     unawaited(DramaMutePreferences.instance.load());
+    // 弹幕开关/配置与字号档都是全局 SP（与播放页同键）：feed 与播放页
+    // 互相跟随。字号档行尾文案读内存态，进页先加载一次。
+    unawaited(_loadFeedDanmakuPreference());
+    unawaited(_loadFeedDanmakuSettings());
+    unawaited(ShortSeriesFontScale.load());
+    _inline.activeVid.addListener(_onFeedVidChanged);
+    _inline.seeked.addListener(_onFeedSeeked);
+    // 进度心跳每秒喂一次调度器（与播放页一致：不逐帧，预取/补数都靠它）。
+    _feedDanmakuTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!_feedDanmakuEnabled || !_inline.playing.value) return;
+      _feedDanmakuLoader.onProgress(_inline.position.value.inMilliseconds);
+    });
     WidgetsBinding.instance.addPostFrameCallback((_) {
       // 首帧只加载**当前选中频道**的订阅流。provider 出厂停在
       // tabIndex=2（看剧＝tab_type 8），而默认频道是推荐（tabIndex=6＝
@@ -359,6 +422,11 @@ class _DramaPageState extends ConsumerState<DramaPage>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _inline.activeVid.removeListener(_onFeedVidChanged);
+    _inline.seeked.removeListener(_onFeedSeeked);
+    _feedDanmakuTimer?.cancel();
+    _feedDanmakuFlight?.cancel();
+    _feedDanmakuLoader.dispose();
     unawaited(_inline.dispose());
     _guideFadeIn?.cancel();
     _guideTick?.cancel();
@@ -701,10 +769,12 @@ class _DramaPageState extends ConsumerState<DramaPage>
 
   /// 长按中带打开的更多面板。官方链路：`jq3/x` 的 onLongPress 命中 K6 中带
   /// 且 `y7()` 成功 → `br3.y` 路由 → 与全页播放页同一个 `oi3/k` 面板构建器
-  /// （from = `show_more_panel_from_long_click`）。样式跟随
-  /// `play_control_panel_style_v681`：浅色支（`#FAFAFA`、药丸、无取消行）
-  /// 与深色 V2 同源，feed 只接实际支持的行（倍速）；清晰度/清屏/弹幕等
-  /// feed 没有的行由组件按回调判空隐藏，不留死入口。
+  /// （from = `show_more_panel_from_long_click`），**行集也是同一份**。
+  /// 样式跟随 `play_control_panel_style_v681`：浅色支（`#FAFAFA`、药丸、
+  /// 无取消行）与深色 V2 同源；行随回调判空隐藏——清晰度要会话真有多档
+  /// 流（官方 `oi3/k.P()` 门），听视频/离线缓存要集目录在场，清屏/弹幕/
+  /// 字号是会话级状态。深色 V2 面板没有听视频/离线缓存/字号行（与全页
+  /// 同支行集），所以那三行只在浅色支出现。
   ///
   /// 官方的面板是 dialog（`DialogType.MORE_PANEL`），不暂停播放器——视频在
   /// 面板后面继续播，这里同样只置 `_modalOpen` 挡手势，不走会销毁播放器的
@@ -734,24 +804,261 @@ class _DramaPageState extends ConsumerState<DramaPage>
         ),
         builder: (context) {
           if (!dark) {
-            // 浅色支：feed 只有倍速可操作（无多档流、无清屏/弹幕）。
-            return PlayletMorePanelLight(rate: _inline.rate.value);
+            return PlayletMorePanelLight(
+              rate: _inline.rate.value,
+              // 清晰度行：会话当前流的多档 renditions（官方单流时由组件隐藏）。
+              qualityVariants: _inline.variants,
+              currentQualityUrl: _inline.currentVariant?.url,
+              onQualitySelected: _switchFeedQuality,
+              clearScreen: _feedClearScreen,
+              onToggleClearScreen: () =>
+                  setState(() => _feedClearScreen = !_feedClearScreen),
+              danmakuEnabled: _feedDanmakuEnabled,
+              onToggleDanmaku: () => unawaited(_toggleFeedDanmaku()),
+              // 官方 `jm3.t0`：行尾当前档 + 点击级联打开字号弹层。
+              fontScaleLabel: ShortSeriesFontScale.label,
+              onOpenFontSettings: () => _pendingFeedFontScale = true,
+              // 官方 `jm3.d0.y`/`jm3.u`：行点击随面板关闭直接打开听书页/
+              // 选集下载弹窗（与全页 chrome 同款直推；集目录不在场——
+              // 未起播/单集搜索回落——时整行不出现）。
+              onOpenListenMode: _inline.episodes.isNotEmpty
+                  ? () => unawaited(_openFeedListenMode())
+                  : null,
+              onOpenOfflineCache: _inline.episodes.isNotEmpty
+                  ? () => unawaited(_openFeedDownloadSheet())
+                  : null,
+            );
           }
           return PlayletMorePanel(
             rate: _inline.rate.value,
-            // feed 没有画面撑满/弹幕，行随回调缺省隐藏。
+            // feed 没有画面撑满，行随回调缺省隐藏。
             fillScreen: false,
             defaultMute: _inline.muted.value,
             onDefaultMuteChanged: (_) => unawaited(_inline.toggleMute()),
-            danmakuEnabled: false,
+            danmakuEnabled: _feedDanmakuEnabled,
+            onToggleDanmaku: () => unawaited(_toggleFeedDanmaku()),
+            clearScreen: _feedClearScreen,
+            onToggleClearScreen: () =>
+                setState(() => _feedClearScreen = !_feedClearScreen),
+            qualityVariants: _inline.variants,
+            currentQualityUrl: _inline.currentVariant?.url,
+            onQualitySelected: _switchFeedQuality,
           );
         },
       );
-      if (selected is double) unawaited(_inline.selectRate(selected));
+      // 浅色支回传 EpisodeVariant（清晰度），深色支回传 double（倍速）。
+      if (selected is EpisodeVariant) {
+        _switchFeedQuality(selected);
+      } else if (selected is double) {
+        unawaited(_inline.selectRate(selected));
+      }
     } finally {
       _feedPanelOpen = false;
       if (mounted) setState(() {});
     }
+    // 「字体大小」行是唯一级联行（官方 jm3.t0.m：面板收起后再开弹层，
+    // 避免 _modalOpen 计账互相覆盖）；听视频/离线缓存行走面板行回调直推。
+    if (!mounted) return;
+    if (_pendingFeedFontScale) {
+      _pendingFeedFontScale = false;
+      unawaited(_showFeedFontScaleSheet());
+    }
+  }
+
+  /// 清晰度切换（官方 `bgw`）：Toast 立即出，不等换流完成。
+  void _switchFeedQuality(EpisodeVariant variant) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('清晰度已成功切换至${variant.name}')),
+    );
+    unawaited(_inline.switchVariant(variant));
+  }
+
+  /// 字号弹层（官方 `nm3.e`，与播放页共用同一张 [showPlayletFontScaleSheet]）。
+  Future<void> _showFeedFontScaleSheet() async {
+    if (_modalOpen || _openingId != null) return;
+    setState(() => _modalOpen = true);
+    try {
+      await showPlayletFontScaleSheet(context);
+    } finally {
+      _modalOpen = false;
+      if (mounted) setState(() {});
+    }
+  }
+
+  /// 离线缓存（官方 `jm3.u`）：面板行 → 选集下载弹窗，剧集目录直接用
+  /// 会话已加载的这份（feed 激活时就拉过）。弹窗与面板同为 dialog 语义，
+  /// 不销毁播放器。
+  Future<void> _openFeedDownloadSheet() async {
+    if (_modalOpen || _openingId != null) return;
+    final item = _currentItem();
+    if (item == null) return;
+    final episodes = _inline.episodes;
+    if (episodes.isEmpty) return;
+    _modalOpen = true;
+    try {
+      await DramaDownloadSheet.show(
+        context,
+        seriesId: item.seriesId ?? item.id,
+        title: item.title,
+        cover: item.cover,
+        episodes: episodes,
+      );
+    } finally {
+      _modalOpen = false;
+      if (mounted) setState(() {});
+    }
+  }
+
+  /// 听视频（官方 `jm3.d0.y` 的听书模式页语义）：会话目标剧与当前集交给
+  /// 听书页；关闭时把「听到哪一集 + 进度」写回，正在看的卡还在原剧就按
+  /// 听到的位置续播，听期间划走了就只落历史。
+  ///
+  /// 听书页建自己的播放器，所以进页前与推全页播放器同一条纪律：销毁
+  /// inline 播放器并清空池，不允许两个原生实例同时存活。`_modalOpen`
+  /// 必须先于销毁置位——销毁清空 activeVid 会触发页面重建，先挡住
+  /// [_syncInline] 才不会在销毁窗口里把刚拆掉的卡重新起播。
+  Future<void> _openFeedListenMode() async {
+    if (_modalOpen || _openingId != null) return;
+    final item = _currentItem();
+    final series = _inline.activeSeries;
+    final episodes = List<Chapter>.of(_inline.episodes);
+    final index = _inline.activeEpisodeIndex;
+    if (item == null || series == null || episodes.isEmpty || index == null) {
+      return;
+    }
+    _modalOpen = true;
+    (int, Duration)? result;
+    try {
+      await _inline.disposePlayer();
+      if (!mounted) return;
+      result = await Navigator.of(context).push<(int, Duration)>(
+        MaterialPageRoute<(int, Duration)>(
+          builder: (_) => ListenModePage(
+            seriesTitle: series.title,
+            coverUrl: series.cover,
+            episodes: episodes,
+            initialIndex: index,
+            resolveSource: _inline.resolveListenSource,
+          ),
+        ),
+      );
+    } finally {
+      _modalOpen = false;
+      if (mounted) setState(() {});
+    }
+    if (!mounted) return;
+    final (listenIndex, position) = result ?? (index, Duration.zero);
+    final clampedIndex = listenIndex.clamp(0, episodes.length - 1);
+    // 官方 sync_progress_strategy_listen_mode：先落历史再续播，中途被杀
+    // 也不丢听书进度。
+    await _inline.persistListenProgress(
+      series,
+      episodes,
+      clampedIndex,
+      position,
+    );
+    if (!mounted) return;
+    if (_currentItem()?.id == item.id) {
+      // 还在原卡：按听到的集与位置续播（激活路径消费显式起点）。
+      await _inline.activate(
+        item,
+        startEpisodeIndex: clampedIndex,
+        startPosition: position,
+      );
+    } else {
+      // 听期间划到了别的卡：按常规路径激活在屏卡，听书进度已落历史。
+      _syncInline();
+    }
+  }
+
+  /// 官方开关切换（`i95/i.java:339-346`）：落盘 + Toast；重新打开时整池
+  /// 重灌，按当前播放位置续取。
+  Future<void> _toggleFeedDanmaku() async {
+    final enabled = !_feedDanmakuEnabled;
+    setState(() => _feedDanmakuEnabled = enabled);
+    _feedDanmakuLoader.setEnabled(enabled);
+    if (enabled) _restartFeedDanmaku();
+    await DanmakuPreference.save(enabled);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(enabled ? danmakuEnabledToast : danmakuDisabledToast),
+      ),
+    );
+  }
+
+  /// 弹幕开关与配置都是全局 SP（官方 `video_danmaku_switch_sp` /
+  /// `danmaku_config`），与播放页读同一份。
+  Future<void> _loadFeedDanmakuPreference() async {
+    final enabled = await DanmakuPreference.load();
+    if (!mounted) return;
+    setState(() => _feedDanmakuEnabled = enabled);
+    _feedDanmakuLoader.setEnabled(enabled);
+  }
+
+  Future<void> _loadFeedDanmakuSettings() async {
+    final settings = await DanmakuSettings.load();
+    if (!mounted) return;
+    setState(() => _feedDanmakuSettings = settings);
+  }
+
+  /// 切集/重开开关：时间轴整池重灌，调度器按当前播放位置发首批（官方
+  /// ON_VIDEO_PLAY 语义；听书回传的显式起点在激活早期就挂上了 [InlineVideoPlayback.position]）。
+  void _restartFeedDanmaku() {
+    final vid = _inline.activeVid.value;
+    _feedDanmaku.reset();
+    _feedDanmakuFlight?.cancel();
+    _feedDanmakuFlight = null;
+    if (vid == null || vid.isEmpty) return;
+    final series = _inline.activeSeries;
+    if (series != null) {
+      _feedDanmakuSeriesIds[vid] = series.seriesId ?? series.id;
+      // 会话内看过的剧有限，但长会话也要封顶：保留最近 64 条映射。
+      while (_feedDanmakuSeriesIds.length > 64) {
+        _feedDanmakuSeriesIds.remove(_feedDanmakuSeriesIds.keys.first);
+      }
+    }
+    final startMs = _inline.position.value.inMilliseconds;
+    _feedDanmakuLoader.reset(vid: vid, startMs: startMs < 0 ? 0 : startMs);
+    if (mounted) setState(() {});
+  }
+
+  void _onFeedVidChanged() {
+    final vid = _inline.activeVid.value;
+    if (vid == null || vid.isEmpty) {
+      // 播放器销毁/入池：时间轴清空，调度器等下一个 vid。
+      _feedDanmaku.reset();
+      _feedDanmakuFlight?.cancel();
+      _feedDanmakuFlight = null;
+      if (mounted) setState(() {});
+      return;
+    }
+    _restartFeedDanmaku();
+  }
+
+  /// 拖动进度条与换画质回跳的最终目标（官方 `ON_SEEK_FINISH`）。
+  void _onFeedSeeked() {
+    _feedDanmakuLoader.onSeek(_inline.seeked.value.inMilliseconds);
+  }
+
+  /// 弹幕取数：与播放页同一条接口（`:group_id` = vid，series 进
+  /// `business_param.book_id`，时间毫秒）。seriesId 按 vid 回查：在飞的
+  /// 旧请求在切剧后完成时也不会误挂新剧的 id。
+  Future<PlayletCommentPage> _fetchFeedDanmaku(
+    DanmakuFetchRequest request,
+  ) {
+    final flight = BackendRequest();
+    _feedDanmakuFlight = flight;
+    return ApiClient.instance.withCancellation(flight, () {
+      return ApiClient.instance.playletDanmaku(
+        request.vid,
+        seriesId: _feedDanmakuSeriesIds[request.vid] ?? '',
+        startOffsetMs: request.startOffsetMs,
+        duration: _inline.duration.value,
+        cursor: request.cursor,
+      );
+    });
   }
 
   /// 在屏卡的热评列表。官方在 holder 绑定时按剧请求（评论列表与计数
@@ -1100,6 +1407,18 @@ class _DramaPageState extends ConsumerState<DramaPage>
             video: onScreen
                 ? _InlineVideoLayer(item: item, playback: _inline)
                 : null,
+            // 弹幕与视频同裁剪（12dp 圆角内），清屏态整层不出现（与播放
+            // 页 chrome 的 `!_clearScreen` 同门）。
+            danmakuOverlay: onScreen
+                ? _FeedDanmakuOverlay(
+                    item: item,
+                    playback: _inline,
+                    entries: _feedDanmaku.entries,
+                    enabled: _feedDanmakuEnabled,
+                    clearScreen: _feedClearScreen,
+                    settings: _feedDanmakuSettings,
+                  )
+                : null,
             errorOverlay: onScreen
                 ? _InlineVideoError(
                     item: item,
@@ -1114,6 +1433,7 @@ class _DramaPageState extends ConsumerState<DramaPage>
             onOpenSeriesDetail: () => _openSeriesDetail(item),
             onTogglePlay: _togglePlay,
             onOpenMorePanel: () => unawaited(_showFeedMorePanel()),
+            clearScreen: onScreen && _feedClearScreen,
             hotComments: _feedHotComments[item.id] ?? const [],
             onHotCommentTap: (comment) =>
                 unawaited(_openFeedComments(item, comment)),
@@ -1543,6 +1863,10 @@ class _DramaFeedCard extends StatelessWidget {
   final MediaItem item;
   final bool opening;
   final Widget? video;
+
+  /// 弹幕层，与视频一起裁在 12dp 圆角内；清屏/未上屏时由宿主不传或整层
+  /// 自隐藏。层自身 IgnorePointer，不抢手势。
+  final Widget? danmakuOverlay;
   final Widget? errorOverlay;
   final InlineVideoPlayback? playback;
   final VoidCallback? onFullscreen;
@@ -1550,6 +1874,11 @@ class _DramaFeedCard extends StatelessWidget {
   final VoidCallback onTogglePlay;
   final VoidCallback onOpenMorePanel;
   final VoidCallback onOpenSeriesDetail;
+
+  /// 清屏播放（官方面板行的会话态）：渐变遮罩、信息层、进度条与静音
+  /// 药丸整批隐藏，出口只有面板的「退出清屏」行（与官方旧底栏分支同款
+  /// 的无栏内出口形态）。
+  final bool clearScreen;
   final List<PlayletComment> hotComments;
   final ValueChanged<PlayletComment> onHotCommentTap;
   final bool hotCommentActive;
@@ -1559,6 +1888,7 @@ class _DramaFeedCard extends StatelessWidget {
     required this.item,
     required this.opening,
     this.video,
+    this.danmakuOverlay,
     this.errorOverlay,
     this.playback,
     this.onFullscreen,
@@ -1566,6 +1896,7 @@ class _DramaFeedCard extends StatelessWidget {
     required this.onTogglePlay,
     required this.onOpenMorePanel,
     required this.onOpenSeriesDetail,
+    this.clearScreen = false,
     this.hotComments = const [],
     required this.onHotCommentTap,
     this.hotCommentActive = true,
@@ -1591,32 +1922,39 @@ class _DramaFeedCard extends StatelessWidget {
         // RelativeLayout 上），同样不被裁。
         ClipRRect(
           borderRadius: BorderRadius.circular(12),
-          child:
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
               video ??
-              StoryCover(
-                item: item,
-                cacheWidth: (size.width * pixelRatio).ceil(),
-                alignment: Alignment.topCenter,
-              ),
+                  StoryCover(
+                    item: item,
+                    cacheWidth: (size.width * pixelRatio).ceil(),
+                    alignment: Alignment.topCenter,
+                  ),
+              // 弹幕在视频上、其余遮罩之下（官方信息流弹幕不出画面区）。
+              ?danmakuOverlay,
+            ],
+          ),
         ),
         // 官方 `cjk.xml`：底部渐变遮罩，`@drawable/yp` 是
         // `@color/oc`(#01000000) → `@color/ak`(#80000000)、angle 270。
         // 铺满整卡会把封面上半也压暗，所以只盖底部并根据 bottomInset 自适应抬高。
-        Positioned(
-          left: 0,
-          right: 0,
-          bottom: 0,
-          height: 280 + bottomInset,
-          child: const DecoratedBox(
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
-                colors: [Color(0x01000000), Color(0x80000000)],
+        if (!clearScreen)
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 0,
+            height: 280 + bottomInset,
+            child: const DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [Color(0x01000000), Color(0x80000000)],
+                ),
               ),
             ),
           ),
-        ),
         // 官方 `VideoGestureDetectLayout`（`cjc.xml:7`，`marginTop=70dp` /
         // `marginBottom=180dp`）：单击、长按、左右滑动由同一个层转发。
         //
@@ -1668,7 +2006,7 @@ class _DramaFeedCard extends StatelessWidget {
         // 官方进度条（`cjt.xml`）：整条高 16dp、轨道 1.0dip、滑块 1.5dip，
         // 已播 `@color/agn`=#1affffff、底槽 `@color/b8`=#4dffffff，左右 padding 16dp。
         // 自适应悬浮在底部导航栏之上，避免被底栏遮挡。
-        if (playback != null)
+        if (playback != null && !clearScreen)
           Positioned(
             left: 0,
             right: 0,
@@ -1678,7 +2016,7 @@ class _DramaFeedCard extends StatelessWidget {
         // 官方「取消静音」药丸（feed 变体 `mq3.c` + `bvf.xml`，108×36dp 展开），
         // 不是播放页的 `ck8.xml` 变体（12sp+16dp lottie、3s 定时）。官方出厂
         // 默认**有声**，药丸只在该会话静音时出现；形态细节见 _MuteHint 文档。
-        if (playback != null)
+        if (playback != null && !clearScreen)
           Positioned(
             left: 12,
             bottom: bottomInset + 120,
@@ -1697,21 +2035,22 @@ class _DramaFeedCard extends StatelessWidget {
         // （`nk3.c` inflate `ad9.xml`，在 RelativeLayout 里 CENTER_IN_PARENT），
         // 然后是标题行（`d6g.xml`）、分类 chip 行（`d6f.xml` 的 `hdm`）、
         // 集数简介行（`m6` ShortSeriesExtendTextView）。整块挂在信息槽 `H3` 上。
-        Positioned(
-          left: 12,
-          right: 12,
-          bottom: bottomInset + 16,
-          child: _InfoPanel(
-            item: item,
-            playback: playback,
-            onOpenSeriesDetail: onOpenSeriesDetail,
-            onFullscreen: onFullscreen,
-            onQuickCatalog: onQuickCatalog,
-            hotComments: hotComments,
-            onHotCommentTap: onHotCommentTap,
-            hotCommentActive: hotCommentActive,
+        if (!clearScreen)
+          Positioned(
+            left: 12,
+            right: 12,
+            bottom: bottomInset + 16,
+            child: _InfoPanel(
+              item: item,
+              playback: playback,
+              onOpenSeriesDetail: onOpenSeriesDetail,
+              onFullscreen: onFullscreen,
+              onQuickCatalog: onQuickCatalog,
+              hotComments: hotComments,
+              onHotCommentTap: onHotCommentTap,
+              hotCommentActive: hotCommentActive,
+            ),
           ),
-        ),
 
         if (opening)
           const Positioned.fill(
@@ -1740,6 +2079,58 @@ class _DramaFeedCard extends StatelessWidget {
             ),
           ),
       ],
+    );
+  }
+}
+
+/// feed 弹幕层：复用播放页的时间轴渲染组件，只在「本卡是会话目标、
+/// 开关开启、非清屏」时出现。飞行/轨道/字号语义与播放页完全一致
+/// （[PlayletDanmakuLayer] 自带帧时钟与暂停冻结）。
+class _FeedDanmakuOverlay extends StatelessWidget {
+  final MediaItem item;
+  final InlineVideoPlayback playback;
+  final List<PlayletComment> entries;
+  final bool enabled;
+  final bool clearScreen;
+  final DanmakuSettings settings;
+
+  const _FeedDanmakuOverlay({
+    required this.item,
+    required this.playback,
+    required this.entries,
+    required this.enabled,
+    required this.clearScreen,
+    required this.settings,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: Listenable.merge([
+        playback.activeId,
+        playback.playing,
+        playback.rate,
+      ]),
+      builder: (context, _) {
+        final active =
+            enabled &&
+            !clearScreen &&
+            entries.isNotEmpty &&
+            playback.activeId.value == item.id;
+        if (!active) return const SizedBox.shrink();
+        return Positioned.fill(
+          child: IgnorePointer(
+            child: PlayletDanmakuLayer(
+              entries: entries,
+              position: playback.position,
+              rate: playback.rate.value,
+              playing: playback.playing.value,
+              landscape: false,
+              settings: settings,
+            ),
+          ),
+        );
+      },
     );
   }
 }

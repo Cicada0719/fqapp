@@ -18,6 +18,7 @@ import '../services/short_series_font_scale.dart';
 import '../models/playlet_comment.dart';
 import 'player/playlet_danmaku_layer.dart';
 import 'player/playlet_danmaku_settings.dart';
+import 'player/playlet_font_scale_sheet.dart';
 import 'player/story_player_panel.dart';
 import 'player/playlet_hot_comment_bar.dart';
 import 'player/playlet_more_panel.dart';
@@ -951,117 +952,18 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
     if (mounted) setState(() => _modalOpen = false);
   }
 
-  /// 字号弹层（官方 `nm3.e`）：标准/大号/超大号三档药丸 + 选中档的预览
-  /// 文本（官方是 `ShortSeriesScaleTextView` 样张）。选中即生效并持久化
-  /// （SP `short_series_font_scale_manager/current_selected_index`）。
+  /// 字号弹层（官方 `nm3.e`）。弹层本体与 feed 更多面板共用
+  /// [showPlayletFontScaleSheet]；这里只管 chrome 侧的时机：守门、
+  /// `_modalOpen` 计账与关闭后的隐藏计时。
   /// Note: 字号档作用域/弹幕豁免/弹层不自动关的取舍 — 见
   /// .agents/notes/implemented/feature/2026-09-29-listen-mode-and-font-scale.md
   Future<void> _showFontScaleSheet() async {
     if (_overlayOpen || _panelOpen || _locked) return;
     setState(() => _modalOpen = true);
-    await showModalBottomSheet<void>(
-      context: context,
-      useSafeArea: true,
-      sheetAnimationStyle: const AnimationStyle(
-        duration: Duration(milliseconds: 200),
-        reverseDuration: Duration(milliseconds: 200),
-      ),
-      barrierColor: Colors.transparent,
-      backgroundColor: const Color(0xFFFAFAFA),
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-      ),
-      builder: (sheetContext) => StatefulBuilder(
-        builder: (sheetContext, setSheetState) {
-          final current = ShortSeriesFontScale.instance.clamp(0, 2);
-          return SafeArea(
-            top: false,
-            child: Padding(
-              key: const ValueKey('player-font-scale-sheet'),
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 20),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    '字体大小',
-                    style: TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                      color: const Color(0xFF000000),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  Row(
-                    children: [
-                      for (final (index, label) in ShortSeriesFontScale.labels
-                          .indexed)
-                        Padding(
-                          padding: const EdgeInsets.only(right: 8),
-                          child: Semantics(
-                            label: label,
-                            button: true,
-                            selected: index == current,
-                            onTap: () {},
-                            excludeSemantics: true,
-                            child: InkWell(
-                              key: ValueKey('player-font-scale-$index'),
-                              onTap: () {
-                                unawaited(ShortSeriesFontScale.save(index));
-                                setState(() {});
-                                setSheetState(() {});
-                              },
-                              borderRadius: BorderRadius.circular(15),
-                              child: Container(
-                                height: 30,
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 14,
-                                ),
-                                alignment: Alignment.center,
-                                decoration: BoxDecoration(
-                                  color: index == current
-                                      ? Colors.white
-                                      : Colors.transparent,
-                                  borderRadius: BorderRadius.circular(15),
-                                  border: Border.all(
-                                    color: index == current
-                                        ? const Color(0x1F000000)
-                                        : Colors.transparent,
-                                  ),
-                                ),
-                                child: Text(
-                                  label,
-                                  style: TextStyle(
-                                    fontSize: 14,
-                                    fontWeight: index == current
-                                        ? FontWeight.bold
-                                        : FontWeight.normal,
-                                    color: index == current
-                                        ? const Color(0xFF000000)
-                                        : const Color(0x66000000),
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ),
-                        ),
-                    ],
-                  ),
-                  const SizedBox(height: 14),
-                  // 预览行按选中档即时缩放（官方样张语义）。
-                  Text(
-                    '播放页文字大小预览',
-                    key: const ValueKey('player-font-scale-preview'),
-                    textScaler: TextScaler.linear(ShortSeriesFontScale.scale),
-                    style: TextStyle(fontSize: 14, color: const Color(0xFF000000)),
-                  ),
-                ],
-              ),
-            ),
-          );
-        },
-      ),
-    );
+    // 选档即时刷新 chrome 树的文字缩放（弹层盖不住整页）。
+    await showPlayletFontScaleSheet(context, onSelected: () {
+      if (mounted) setState(() {});
+    });
     if (mounted) setState(() => _modalOpen = false);
     if (mounted) _scheduleHide();
   }

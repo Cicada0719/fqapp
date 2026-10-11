@@ -2,12 +2,14 @@
 // 见 .agents/notes/implemented/feature/2026-09-20-inline-drama-playback.md
 
 import 'dart:async';
+import 'dart:io' show File;
 import 'dart:ui' show Size;
 
 import 'package:flutter/foundation.dart';
 
 import '../models/media_item.dart';
 import 'api_client.dart';
+import 'drama_download_store.dart';
 import 'drama_mute_preferences.dart';
 import 'episode_source_cache.dart';
 import 'library_store.dart';
@@ -117,6 +119,19 @@ class InlineVideoPlayback {
   /// （官方 `cjx.xml` 的速度提示只属于按住期间的速度层）。
   final ValueNotifier<bool> boosting = ValueNotifier<bool>(false);
 
+  /// itemId of the episode the session is decoding, null while nothing is
+  /// mounted. 弹幕取数按 vid（CRIT-009 的时间轴也是每集一条），feed 页在
+  /// 这个值变化时整池重灌；在集目录到达后才置值，所以它天然是「真正在
+  /// 播的那一集」，与 [activeId]（剧目标，同步置位）不同。
+  final ValueNotifier<String?> activeVid = ValueNotifier<String?>(null);
+
+  /// The final seek target of the last seek（官方 `ON_SEEK_FINISH`）。拖动
+  /// 进度条、换画质回跳都用它通知弹幕调度器清游标补数；值本身没有
+  /// 「消费一次」的语义，页面侧按需要读取。
+  final ValueNotifier<Duration> seeked = ValueNotifier<Duration>(
+    Duration.zero,
+  );
+
   /// Video pixel size of the current episode, `Size.zero` until the decoder
   /// reports one. The feed lays the texture out with the same contain rule as
   /// the full page player, so a landscape drama is not squeezed into a 9:16
@@ -135,6 +150,12 @@ class InlineVideoPlayback {
   String _tab = '短剧';
 
   final Map<String, List<Chapter>> _directories = {};
+
+  /// 入池那一刻每部剧正在播的目录与集号，键与 [PlayerPool] 一致。复用
+  /// 出池时还原——否则 `_episodes`/`_activeIndex` 还停留在新激活的剧上，
+  /// 之后一次进度持久化就会把别的剧的 episodeId 写进这部剧的历史。
+  final Map<String, ({List<Chapter> episodes, int index})> _parkedPlayback =
+      {};
   final List<StreamSubscription<dynamic>> _subs = [];
   Future<void> _releases = Future<void>.value();
 
@@ -150,6 +171,26 @@ class InlineVideoPlayback {
 
   /// True while a player instance exists (playing or paused).
   bool get hasPlayer => _player != null;
+
+  /// The drama this session targets, null before the first activation. The
+  /// title/cover follow the feed item that started it（听书页与下载弹窗的
+  /// 头部信息同源）。
+  MediaItem? get activeSeries => _active;
+
+  /// Directory of the playing drama, empty while nothing is mounted or the
+  /// activation has not reached the directory yet. 听视频与离线缓存行的
+  /// 数据源：列表非空才显示（与官方面板行同门）。
+  List<Chapter> get episodes => _episodes;
+
+  /// Index of the playing episode in [episodes], null while unknown.
+  int? get activeEpisodeIndex => _activeIndex;
+
+  /// The episode the session is decoding, null while unknown.
+  Chapter? get activeEpisode {
+    final index = _activeIndex;
+    if (index == null || index < 0 || index >= _episodes.length) return null;
+    return _episodes[index];
+  }
 
   /// True while the current player is a decoder taken back out of [pool].
   ///
@@ -218,7 +259,17 @@ class InlineVideoPlayback {
   /// Otherwise any earlier activation is invalidated first: its directory
   /// request, its `create` and its subscriptions can no longer touch this
   /// session, and the previous player is parked (not destroyed).
-  Future<void> activate(MediaItem series) async {
+  ///
+  /// [startEpisodeIndex] / [startPosition] come from the listen mode page's
+  /// write-back（官方 `sync_progress_strategy_listen_mode`）: both are
+  /// explicit overrides of the history resume, consumed only by the fresh
+  /// create path — a caller that hands them in has just torn the session down,
+  /// so the pool is empty by construction.
+  Future<void> activate(
+    MediaItem series, {
+    int? startEpisodeIndex,
+    Duration? startPosition,
+  }) async {
     if (_disposed) return;
     final generation = ++_generation;
     final contentId = series.seriesId ?? series.id;
@@ -244,7 +295,7 @@ class InlineVideoPlayback {
     _detachSubscriptions();
     _player = null;
     if (previous != null && previousId != null && previousId != contentId) {
-      pool.park(previousId, previous);
+      _parkWithState(previousId, previous);
     } else if (previous != null && previousId == contentId) {
       // Same drama re-activated (a retry): the old decoder is stale.
       unawaited(previous.dispose());
@@ -265,6 +316,12 @@ class InlineVideoPlayback {
       } else {
         _player = player;
         _reusedFromPool = true;
+        // 还原这部剧入池时的目录与集号：`_persistProgress` 要靠它们把
+        // 进度写到正确的 episodeId 下（见 [_parkedPlayback]）。
+        final restored = _parkedPlayback.remove(contentId);
+        _episodes = restored?.episodes ?? const [];
+        _activeIndex = restored?.index;
+        activeVid.value = activeEpisode?.itemId;
         _subscribe(player, generation);
         textureId.value = player.textureId;
         _adoptVideoSize(player);
@@ -302,12 +359,16 @@ class InlineVideoPlayback {
         // Local storage is optional for starting a video.
       }
       if (!_current(generation)) return;
-      final index = (resumeEpisodeIndex(saved, episodes) ?? 0).clamp(
-        0,
-        episodes.length - 1,
-      );
+      final index = (startEpisodeIndex ?? resumeEpisodeIndex(saved, episodes) ?? 0)
+          .clamp(0, episodes.length - 1);
       _episodes = episodes;
       _activeIndex = index;
+      // 听书回传的位置先挂上进度条再等首帧；弹幕调度器读 [position] 做
+      // 首批起始毫秒，方向才会对。
+      if (startPosition != null && startPosition > Duration.zero) {
+        position.value = startPosition;
+      }
+      activeVid.value = episodes[index].itemId;
       var source = await _sources.request(episodes[index]).future;
       // 会话内记住的画质选择（官方=引擎当前档）：同一集再次激活时沿用。
       final chosen = _chosen[episodes[index].itemId];
@@ -341,6 +402,14 @@ class InlineVideoPlayback {
       // to be pushed back on it before the first frame shows.
       await _applyPlaybackPrefs(player);
       if (!_current(generation, player)) return;
+      if (startPosition != null && startPosition > Duration.zero) {
+        // 越界（听完一整集）就从头起播；时长未知时信任调用方。
+        final total = player.duration;
+        if (total <= Duration.zero || startPosition < total) {
+          await player.seek(startPosition);
+          if (!_current(generation, player)) return;
+        }
+      }
       if (player.firstFrameRendered) _onFirstFrame(player, generation);
       if (_wantsPlay) {
         await player.play();
@@ -430,6 +499,7 @@ class InlineVideoPlayback {
       await _applyPlaybackPrefs(fresh);
       if (!_current(generation, fresh)) return;
       await fresh.seek(resume);
+      seeked.value = resume;
       if (!_current(generation, fresh)) return;
       if (resumeWantsPlay || _wantsPlay) {
         await fresh.play();
@@ -588,7 +658,64 @@ class InlineVideoPlayback {
         ? Duration.zero
         : (total > Duration.zero && target > total ? total : target);
     position.value = clamped;
+    seeked.value = clamped;
     await player.seek(clamped);
+  }
+
+  /// 听书页的取流入口：离线优先，在线走会话的取流
+  /// 缓存——与全页播放页 `_resolveSource` 同构。失败返回 null，由听书页
+  /// 呈现错误态，不抛穿。
+  Future<EpisodeSource?> resolveListenSource(Chapter episode) async {
+    final store = HiveDramaDownloadStore.instance;
+    if (store.isReady) {
+      try {
+        final cached = await store.episode(episode.itemId);
+        if (cached != null && File(cached.filePath).existsSync()) {
+          return cached.toSource();
+        }
+      } catch (_) {
+        // 离线索引读不出来就当没有缓存。
+      }
+    }
+    try {
+      return await _sources.request(episode).future;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 听书页关闭后的进度写回（官方 `sync_progress_strategy_listen_mode` 的
+  /// 本地等价）：把「听到哪一集 + 进度」写进播放历史，下一次激活按它续看。
+  /// 会话自己不管听书页的生命周期，所以目录与集号由调用方传入（在
+  /// `disposePlayer` 清空会话状态之前捕获）。
+  Future<void> persistListenProgress(
+    MediaItem series,
+    List<Chapter> episodes,
+    int index,
+    Duration position,
+  ) {
+    if (index < 0 || index >= episodes.length) {
+      return Future<void>.value();
+    }
+    final contentId = series.seriesId ?? series.id;
+    final positionMs = position.inMilliseconds.clamp(0, 1 << 40);
+    return _history.save({
+      'id': contentId,
+      'kind': series.kind,
+      'title': series.title,
+      'bookId': contentId,
+      'seriesId': contentId,
+      'episodeId': episodes[index].itemId,
+      'chapterId': episodes[index].itemId,
+      'episode': index,
+      // 听书页只回传集内进度，总长未知：progress 置 0，续看按 position。
+      'progress': 0.0,
+      'position': positionMs / 1000,
+      'duration': 0.0,
+      'maxScroll': 0.0,
+      'cover': series.cover,
+      'time': DateTime.now().millisecondsSinceEpoch,
+    });
   }
 
   /// Switch the playback rate. 长按快进（[startBoost]/[endBoost]）与更多
@@ -624,6 +751,7 @@ class InlineVideoPlayback {
     // the player and the notifiers now.
     if (_disposed || generation != _generation) return;
     activeId.value = null;
+    activeVid.value = null;
     firstFrame.value = false;
     playing.value = false;
     error.value = null;
@@ -644,13 +772,18 @@ class InlineVideoPlayback {
     // history store. Grid/list navigation must not leave a hidden player live.
     final progress = _persistProgress();
     activeId.value = null;
+    activeVid.value = null;
     firstFrame.value = false;
     playing.value = false;
     error.value = null;
     position.value = Duration.zero;
     duration.value = Duration.zero;
     await _teardown();
-    if (!_disposed && generation == _generation) await pool.releaseAll();
+    if (!_disposed && generation == _generation) {
+      await pool.releaseAll();
+      // 池已清空，入池集号记录也随之作废。
+      _parkedPlayback.clear();
+    }
     await progress;
   }
 
@@ -667,8 +800,11 @@ class InlineVideoPlayback {
     await _teardown();
     await pool.dispose();
     _directories.clear();
+    _parkedPlayback.clear();
     _sources.dispose();
     activeId.dispose();
+    activeVid.dispose();
+    seeked.dispose();
     textureId.dispose();
     firstFrame.dispose();
     playing.dispose();
@@ -704,7 +840,20 @@ class InlineVideoPlayback {
       unawaited(player.dispose());
       return;
     }
-    pool.park(_poolKey(series), player);
+    _parkWithState(_poolKey(series), player);
+  }
+
+  /// Park [player] under [key], remembering which episode it was decoding so
+  /// the reuse path can restore [_episodes]/[_activeIndex] — the progress
+  /// write-back and the danmaku vid both read them（见 [_parkedPlayback]）。
+  void _parkWithState(String key, NativePlayer player) {
+    final index = _activeIndex;
+    if (index != null && index >= 0 && index < _episodes.length) {
+      _parkedPlayback[key] = (episodes: _episodes, index: index);
+    } else {
+      _parkedPlayback.remove(key);
+    }
+    pool.park(key, player);
   }
 
   void _subscribe(NativePlayer player, int generation) {
@@ -813,6 +962,7 @@ class InlineVideoPlayback {
     _player = null;
     _episodes = const [];
     _activeIndex = null;
+    activeVid.value = null;
     _hasDisplayed = false;
     if (!_disposed) textureId.value = null;
     final cancellations = [

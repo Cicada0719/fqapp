@@ -18,6 +18,7 @@ import 'package:fqapp/services/drama_mute_preferences.dart';
 import 'package:fqapp/services/player_preferences.dart';
 import 'package:fqapp/services/shelf_store.dart';
 import 'package:fqapp/services/swipe_guide_store.dart';
+import 'package:fqapp/widgets/player/playlet_danmaku_layer.dart';
 
 import 'support/controlled_player.dart';
 
@@ -63,6 +64,9 @@ class _Session {
   /// 条目简介文案（官方信息槽的「第1集丨…」回落行）。
   String itemIntro = '';
 
+  /// 内容回包附带的多档流名（官方清晰度行的数据源；空 = 单流，行隐藏）。
+  List<String> variantNames = [];
+
   /// The two notifiers the page's providers resolve to; kept as fields so a
   /// test can re-load the feed without a gesture.
   late final HomeNotifier home = _notifierFor(this);
@@ -106,7 +110,21 @@ class _Session {
           contentLoader: (itemId, tab) async {
             contentCalls.add('$itemId:$tab');
             if (failure != null) throw failure!;
-            return {'video_url': 'https://example.invalid/$itemId.mp4'};
+            final response = <String, dynamic>{
+              'video_url': 'https://example.invalid/$itemId.mp4',
+            };
+            if (variantNames.isNotEmpty) {
+              response['variants'] = [
+                for (final (index, name) in variantNames.indexed)
+                  {
+                    'name': name,
+                    'url': 'https://example.invalid/$itemId-$name.mp4',
+                    'key_hex': '',
+                    'height': 1080 - index * 180,
+                  },
+              ];
+            }
+            return response;
           },
           historyStore: store,
           hotCommentsLoader: (seriesId) async =>
@@ -625,9 +643,15 @@ void main() {
       findsOneWidget,
     );
     expect(find.text('倍速'), findsOneWidget);
-    // feed 不支持清屏/弹幕/清晰度，面板不留死入口。
-    expect(find.text('清屏播放'), findsNothing);
-    expect(find.text('弹幕'), findsNothing);
+    // feed 面板与官方同一条 oi3/k 行集（2026-10-11 补齐）：清晰度要会话
+    // 真有多档流（本夹具单流 → 行隐藏，官方 oi3/k.P() 门），其余行都是
+    // 真功能入口。
+    expect(find.text('清晰度'), findsNothing);
+    expect(find.text('清屏播放'), findsOneWidget);
+    expect(find.text('弹幕'), findsOneWidget);
+    expect(find.text('离线缓存'), findsOneWidget);
+    expect(find.text('听视频'), findsOneWidget);
+    expect(find.text('字体大小'), findsOneWidget);
     // 浅色支没有取消行（官方 aae 布局同款）。
     expect(find.text('取消'), findsNothing);
 
@@ -749,6 +773,231 @@ void main() {
     expect(session.players.single.calls, contains('volume:1.0'));
     expect(find.byKey(const Key('drama_mute_hint')), findsNothing);
     expect(find.text('已开启声音'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('更多面板清晰度行：多档流在场显示，选档换流并回跳原进度', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    final session = _Session(hasFirstFrame: true)
+      ..variantNames = ['1080P', '540P'];
+    await _mount(tester, session);
+    session.players.single.emitDuration(const Duration(minutes: 2));
+    session.players.single.emitPosition(const Duration(seconds: 30));
+    await _flush(tester);
+
+    await tester.longPress(find.byKey(const Key('drama_card_gestures')));
+    await tester.pump(const Duration(milliseconds: 300));
+    await _flush(tester);
+    expect(find.text('清晰度'), findsOneWidget);
+    expect(find.text('1080P'), findsOneWidget);
+    expect(find.text('540P'), findsOneWidget);
+
+    // 选 540P（官方 bgw）：Toast 立即出，不等换流完成。
+    await tester.tap(find.byKey(const ValueKey('player-more-light-quality-1')));
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(find.text('清晰度已成功切换至540P'), findsOneWidget);
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.pump(const Duration(milliseconds: 300));
+    await _flush(tester);
+    await tester.pump(const Duration(milliseconds: 600));
+    await _flush(tester);
+    expect(
+      find.byKey(const ValueKey('player-more-light-panel')),
+      findsNothing,
+    );
+    // 旧解码器销毁（换档不是入池），新解码器按所选档重建并回跳 30s。
+    expect(session.players, hasLength(2));
+    expect(session.players.first.calls, contains('dispose'));
+    final created = session.players.last.calls
+        .whereType<String>()
+        .where((call) => call.startsWith('create:'))
+        .toList();
+    expect(created, hasLength(1));
+    expect(created.single, endsWith('-540P.mp4'));
+    expect(session.players.last.calls, contains('seek:30000ms'));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('更多面板清屏播放行隐藏信息层，退出清屏行恢复', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    final session = _Session(hasFirstFrame: true);
+    await _mount(tester, session);
+    session.players.single.emitDuration(const Duration(minutes: 2));
+    await _flush(tester);
+    expect(find.byKey(const Key('drama_seek_bar')), findsOneWidget);
+    expect(find.text('观看全片'), findsOneWidget);
+
+    await tester.longPress(find.byKey(const Key('drama_card_gestures')));
+    await tester.pump(const Duration(milliseconds: 300));
+    await _flush(tester);
+    await tester.tap(find.byKey(const ValueKey('player-more-light-clear')));
+    await tester.pump(const Duration(milliseconds: 400));
+    await _flush(tester);
+    // 面板退出与清屏重排的动画有重叠窗口，多泵一程让它走完。
+    await tester.pump(const Duration(milliseconds: 300));
+    await _flush(tester);
+    // 清屏态：进度条与信息层整批隐藏，出口只剩面板行（官方旧底栏形态）。
+    expect(
+      find.byKey(const ValueKey('player-more-light-panel')),
+      findsNothing,
+    );
+    expect(find.byKey(const Key('drama_seek_bar')), findsNothing);
+    expect(find.text('观看全片'), findsNothing);
+
+    await tester.longPress(find.byKey(const Key('drama_card_gestures')));
+    await tester.pump(const Duration(milliseconds: 300));
+    await _flush(tester);
+    expect(find.text('退出清屏'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('player-more-light-clear')));
+    await tester.pump(const Duration(milliseconds: 300));
+    await _flush(tester);
+    expect(find.byKey(const Key('drama_seek_bar')), findsOneWidget);
+    expect(find.text('观看全片'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('更多面板弹幕开关落盘并提示，重开面板状态跟随', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    final session = _Session(hasFirstFrame: true);
+    await _mount(tester, session);
+    session.players.single.emitDuration(const Duration(minutes: 2));
+    await _flush(tester);
+
+    await tester.longPress(find.byKey(const Key('drama_card_gestures')));
+    await tester.pump(const Duration(milliseconds: 300));
+    await _flush(tester);
+    // 开关行不关面板（官方 SwitchButtonV2 的行内切换语义）。
+    await tester.tap(find.byKey(const ValueKey('player-more-light-danmaku-row')));
+    await tester.pump(const Duration(milliseconds: 300));
+    await _flush(tester);
+    expect(find.text('弹幕已关闭，长按视频可开启'), findsOneWidget);
+    expect(await DanmakuPreference.load(), isFalse);
+
+    // Scaffold 同时只显示一条 snackbar：入口动画（250ms）完成后才开始
+    // 计 4s 在屏时长，之后走 250ms 退出——三段都泵到位再点第二次。
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.pump(const Duration(seconds: 4));
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(find.byKey(const ValueKey('player-more-light-danmaku-row')));
+    await tester.pump(const Duration(milliseconds: 300));
+    await _flush(tester);
+    expect(find.text('弹幕已开启'), findsOneWidget);
+    expect(await DanmakuPreference.load(), isTrue);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('更多面板听视频行进听书页，退出后按听到的集落历史并续播', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    // 听书页生产用 NativePlayer.new：全局事件通道监听要在 mock 里应答，
+    // 否则 MissingPluginException 逃进测试 zone（页面自身的错误已被吞掉）。
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+          const MethodChannel('fqapp/native_player/events'),
+          (call) async => null,
+        );
+    addTearDown(
+      () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(
+            const MethodChannel('fqapp/native_player/events'),
+            null,
+          ),
+    );
+    final session = _Session(hasFirstFrame: true);
+    await _mount(tester, session);
+    session.players.single.emitDuration(const Duration(minutes: 2));
+    await _flush(tester);
+    final episodeId = '${session.directoryCalls.first.split(':').first}-1';
+
+    await tester.longPress(find.byKey(const Key('drama_card_gestures')));
+    await tester.pump(const Duration(milliseconds: 300));
+    await _flush(tester);
+    await tester.tap(find.byKey(const ValueKey('player-more-light-listen')));
+    await tester.pump(const Duration(milliseconds: 400));
+    await _flush(tester);
+    // 听书页有自己的播放器：feed 解码器先进 destroy（不是入池）。
+    expect(find.byKey(const ValueKey('listen-page')), findsOneWidget);
+    expect(session.players.single.calls, contains('dispose'));
+
+    await tester.tap(find.byKey(const ValueKey('listen-page-back')));
+    await tester.pump(const Duration(milliseconds: 400));
+    await _flush(tester);
+    await tester.pump(const Duration(milliseconds: 400));
+    await _flush(tester);
+    expect(find.byKey(const ValueKey('listen-page')), findsNothing);
+    // 官方 sync_progress_strategy_listen_mode：听到的集落历史。
+    expect(session.store.writes.last['episodeId'], episodeId);
+    // 回到原卡续播：新解码器按显式起点激活。
+    expect(session.players, hasLength(2));
+    expect(
+      session.players.last.calls.whereType<String>().any(
+        (call) => call.startsWith('create:'),
+      ),
+      isTrue,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('更多面板离线缓存行打开选集下载弹窗', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    final session = _Session(hasFirstFrame: true);
+    await _mount(tester, session);
+    session.players.single.emitDuration(const Duration(minutes: 2));
+    await _flush(tester);
+
+    await tester.longPress(find.byKey(const Key('drama_card_gestures')));
+    await tester.pump(const Duration(milliseconds: 300));
+    await _flush(tester);
+    await tester.tap(find.byKey(const ValueKey('player-more-light-download')));
+    await tester.pump(const Duration(milliseconds: 400));
+    await _flush(tester);
+    // 面板退出与下载弹窗进入的动画有重叠窗口，退出动画在弹窗入场后收尾。
+    await tester.pump(const Duration(milliseconds: 400));
+    await _flush(tester);
+    expect(
+      find.byKey(const ValueKey('player-more-light-panel')),
+      findsNothing,
+    );
+    expect(find.byKey(const ValueKey('download-sheet')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('滑回复用池内解码器后，进度写回的集号是本剧的（不再串到别的剧）', (tester) async {
+    // 回归：复用路径此前不恢复 _episodes/_activeIndex，A→B→A 后一次
+    // 持久化会把 B 的 episodeId 写进 A 的历史（弹幕 vid/听书起始集同源
+    // 读取，一并受害）。
+    SharedPreferences.setMockInitialValues({});
+    final session = _Session(hasFirstFrame: true);
+    await _mount(tester, session);
+    session.players.single.emitDuration(const Duration(minutes: 2));
+    session.players.single.emitPosition(const Duration(seconds: 12));
+    await _flush(tester);
+    final firstSeriesId = session.directoryCalls.first.split(':').first;
+    final firstEpisodeId = '$firstSeriesId-1';
+
+    // A → B：A 的解码器带着「目录 + 集号」入池。
+    await _swipeUp(tester);
+    await _flush(tester);
+    expect(session.players, hasLength(2));
+
+    // B → A：滑回，复用池里的解码器，集号从入池记录还原。
+    await tester.drag(
+      find.byKey(const Key('drama_feed')),
+      const Offset(0, 600),
+    );
+    await tester.pumpAndSettle();
+    await _flush(tester);
+    expect(session.players, hasLength(2));
+    expect(session.players.first.disposed, isFalse);
+
+    // A → 下一部剧：activate 起手持久化 A 的进度，这一次写必须指向
+    // A 自己的集（串号回归点）。
+    await _swipeUp(tester);
+    await _flush(tester);
+    final writesForFirst = session.store.writes
+        .where((entry) => entry['id'] == firstSeriesId)
+        .toList();
+    expect(writesForFirst, isNotEmpty);
+    expect(writesForFirst.last['episodeId'], firstEpisodeId);
     expect(tester.takeException(), isNull);
   });
 }
