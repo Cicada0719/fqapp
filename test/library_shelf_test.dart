@@ -6,9 +6,15 @@ import 'package:hive/hive.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:fqapp/models/media_item.dart';
+import 'package:fqapp/pages/detail_page.dart';
 import 'package:fqapp/pages/library_page.dart';
+import 'package:fqapp/pages/reader_page.dart';
+import 'package:fqapp/services/chapter_cache_store.dart';
+import 'package:fqapp/services/connectivity_status.dart';
 import 'package:fqapp/services/library_store.dart';
 import 'package:fqapp/services/shelf_store.dart';
+
+import 'support/fakes.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -395,6 +401,56 @@ void main() {
       expect(tester.takeException(), isNull);
     });
   });
+
+  group('书架离线直读', () {
+    testWidgets('无网且本地有缓存时，点书直接进阅读器而不是详情页', (tester) async {
+      await tester.runAsync(() async {
+        await ShelfStore.instance.add(_item('offline-book', title: '离线直读的书'));
+      });
+      final cache = MemoryChapterCache();
+      await cache.write(
+        bookId: 'offline-book',
+        chapterId: '1',
+        title: '第一章',
+        text: '离线正文',
+      );
+
+      await tester.pumpWidget(
+        _app(
+          cache: cache,
+          connectivity: () async => (online: false, metered: false),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('离线直读的书'));
+      await tester.pumpAndSettle();
+      expect(find.byType(ReaderPage, skipOffstage: false), findsOneWidget);
+      // 详情页要联网取目录，离线时正是它把「已下载」变成读不了。
+      expect(find.byType(DetailPage, skipOffstage: false), findsNothing);
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
+
+    testWidgets('无网但没有缓存时，仍然走详情页', (tester) async {
+      await tester.runAsync(() async {
+        await ShelfStore.instance.add(_item('no-cache-book', title: '没缓存的书'));
+      });
+
+      await tester.pumpWidget(
+        _app(
+          cache: MemoryChapterCache(),
+          connectivity: () async => (online: false, metered: false),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('没缓存的书'));
+      // 详情页会去联网取目录，测试宿主里必然失败；这里只验它被推了出来。
+      await tester.pump();
+      await tester.pump();
+      expect(find.byType(DetailPage, skipOffstage: false), findsOneWidget);
+      expect(find.byType(ReaderPage, skipOffstage: false), findsNothing);
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
+  });
 }
 
 /// Waits out a write the *page* started itself (`ShelfStore.removeKeys`,
@@ -425,8 +481,19 @@ Future<void> _chooseLayout(WidgetTester tester, String action) async {
   await tester.pumpAndSettle();
 }
 
-Widget _app({VoidCallback? onBrowse}) =>
-    MaterialApp(home: LibraryPage(onBrowse: onBrowse));
+Widget _app({
+  VoidCallback? onBrowse,
+  ChapterCache? cache,
+  ReaderStore? readerStore,
+  Future<ConnectivityView> Function()? connectivity,
+}) => MaterialApp(
+  home: LibraryPage(
+    onBrowse: onBrowse,
+    cacheStore: cache,
+    readerStore: readerStore,
+    connectivity: connectivity,
+  ),
+);
 
 MediaItem _item(String id, {String? title, String kind = 'book', String? seriesId}) =>
     MediaItem(

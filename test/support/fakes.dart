@@ -102,6 +102,22 @@ class MemoryChapterCache implements ChapterCache {
   @override
   Future<Set<String>> cachedChapterIds(String bookId) async =>
       content[bookId]?.keys.toSet() ?? {};
+
+  @override
+  Future<CachedBook?> cachedBook(String bookId) async {
+    final chapters = content[bookId];
+    if (chapters == null || chapters.isEmpty) return null;
+    // 目录没存过时按缓存章节重建，与真实 store 的兜底规则一致。
+    return catalogs[bookId] ??
+        CachedBook(
+          id: bookId,
+          title: bookId,
+          chapters: [
+            for (final id in chapters.keys)
+              Chapter(itemId: id, title: '', volumeName: ''),
+          ],
+        );
+  }
 }
 
 class MemoryDramaDownloadStore implements DramaDownloadStore {

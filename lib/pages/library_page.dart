@@ -8,11 +8,14 @@ import 'package:flutter_lucide/flutter_lucide.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/media_item.dart';
+import '../services/chapter_cache_store.dart';
+import '../services/connectivity_status.dart';
 import '../services/library_store.dart';
 import '../services/media_history_store.dart';
 import '../services/shelf_store.dart';
 import '../widgets/bookshelf_card.dart';
 import '../widgets/home/home_design.dart';
+import 'cached_book_reader.dart';
 import 'cached_books_page.dart';
 import 'detail_page.dart';
 import 'search_page.dart';
@@ -48,7 +51,19 @@ class LibraryPage extends StatefulWidget {
   /// 空，此时按钮不响应。
   final VoidCallback? onBrowse;
 
-  const LibraryPage({super.key, this.onBrowse});
+  /// 离线直读要用的三件外部依赖；都缺省走真实实现，注入后测试可完全离线
+  /// （与缓存页、详情页的注入同一套路）。
+  final ChapterCache? cacheStore;
+  final ReaderStore? readerStore;
+  final Future<ConnectivityView> Function()? connectivity;
+
+  const LibraryPage({
+    super.key,
+    this.onBrowse,
+    this.cacheStore,
+    this.readerStore,
+    this.connectivity,
+  });
 
   @override
   State<LibraryPage> createState() => _LibraryPageState();
@@ -235,10 +250,34 @@ class _LibraryPageState extends State<LibraryPage> {
     );
   }
 
-  void _open(MediaItem item) {
+  /// 点书：离线且本地有缓存时直接进阅读器，否则走详情页。
+  ///
+  /// 官方客户端书架点书就是直接起阅读器（`ReaderBundleBuilder`），中间没有
+  /// 那个要联网取目录的页面。这里只在「无网 + 有缓存」时抄这条捷径：联网时
+  /// 仍走详情页，段评、章节目录预览这些联网能力不会被悄悄降级。
+  Future<void> _open(MediaItem item) async {
+    if (await _openCached(item)) return;
+    if (!mounted) return;
     Navigator.push(
       context,
       MaterialPageRoute(builder: (_) => DetailPage(item: item)),
+    );
+  }
+
+  /// 离线直读：只有小说有章节缓存，且必须在无网时才抢在详情页前面。
+  Future<bool> _openCached(MediaItem item) async {
+    final cache = widget.cacheStore ?? ChapterCacheStore.instance;
+    final book = await cachedBookForOfflineOpen(
+      item,
+      cache: cache,
+      connectivity: await (widget.connectivity ?? currentConnectivity)(),
+    );
+    if (book == null || !mounted) return false;
+    return openCachedBook(
+      context,
+      book: book,
+      cache: cache,
+      readerStore: widget.readerStore,
     );
   }
 

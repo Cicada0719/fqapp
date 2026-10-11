@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:fqapp/models/media_item.dart';
 import 'package:fqapp/pages/audio_page.dart';
@@ -9,6 +10,7 @@ import 'package:fqapp/pages/comic_reader_page.dart';
 import 'package:fqapp/pages/detail_page.dart';
 import 'package:fqapp/pages/player_page.dart';
 import 'package:fqapp/pages/reader_page.dart';
+import 'package:fqapp/services/chapter_cache_store.dart';
 import 'package:fqapp/services/chapter_text_formatter.dart';
 
 import 'support/fakes.dart';
@@ -83,6 +85,8 @@ void main() {
       MaterialApp(
         home: DetailPage(
           item: _book,
+          // 目录失败时会去查本地整本缓存；注入空缓存，让这条路径不碰真实存储。
+          chapterCache: MemoryChapterCache(),
           detailLoader: (id, {String tab = '小说'}) async => {},
           directoryLoader: (id, {String tab = '小说'}) async {
             if (++attempts == 1) {
@@ -141,6 +145,8 @@ void main() {
       MaterialApp(
         home: DetailPage(
           item: _book,
+          // 目录失败时会去查本地整本缓存；注入空缓存，让这条路径不碰真实存储。
+          chapterCache: MemoryChapterCache(),
           detailLoader: (id, {String tab = '小说'}) async => {},
           directoryLoader: (id, {String tab = '小说'}) async {
             if (++attempts == 1) throw StateError('directory unavailable');
@@ -158,6 +164,58 @@ void main() {
     expect(find.text('第一章'), findsOneWidget);
     expect(find.byKey(const Key('detail_read_button')), findsOneWidget);
     expect(attempts, 2);
+  });
+
+  testWidgets('目录失败但本地有整本缓存时，给出「从缓存阅读」入口', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    final cache = MemoryChapterCache();
+    await cache.saveBook(
+      CachedBook(id: 'book', title: '测试书', chapters: _chapters),
+    );
+    await cache.write(
+      bookId: 'book',
+      chapterId: 'first',
+      title: '第一章',
+      text: '离线正文',
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: DetailPage(
+          item: _book,
+          chapterCache: cache,
+          readerStore: MemoryReaderStore(),
+          detailLoader: (id, {String tab = '小说'}) async => {},
+          directoryLoader: (id, {String tab = '小说'}) async =>
+              throw StateError('directory unavailable'),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('重试'), findsOneWidget);
+    expect(find.text('从缓存阅读'), findsOneWidget);
+    await tester.ensureVisible(find.byKey(const Key('detail_read_cached')));
+    await tester.tap(find.byKey(const Key('detail_read_cached')));
+    await tester.pumpAndSettle();
+    expect(find.byType(ReaderPage, skipOffstage: false), findsOneWidget);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('目录失败且本地没有缓存时，只留重试', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: DetailPage(
+          item: _book,
+          chapterCache: MemoryChapterCache(),
+          readerStore: MemoryReaderStore(),
+          detailLoader: (id, {String tab = '小说'}) async => {},
+          directoryLoader: (id, {String tab = '小说'}) async =>
+              throw StateError('directory unavailable'),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('重试'), findsOneWidget);
+    expect(find.text('从缓存阅读'), findsNothing);
   });
 
   testWidgets('optional metadata failure keeps a usable directory visible', (

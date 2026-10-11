@@ -5,8 +5,7 @@ import '../services/api_client.dart';
 import '../services/book_txt_export.dart';
 import '../services/chapter_cache_store.dart';
 import '../services/library_store.dart';
-import '../services/reader_history.dart';
-import 'reader_page.dart';
+import 'cached_book_reader.dart';
 
 class CachedBooksPage extends StatefulWidget {
   final ChapterCacheStore? cacheStore;
@@ -113,47 +112,14 @@ class _CachedBooksPageState extends State<CachedBooksPage> {
     if (_openingBook) return;
     _openingBook = true;
     try {
-      final historyStore = widget.readerStore ?? LibraryStore.instance;
-      Map<String, dynamic>? saved;
-      try {
-        saved = await ReaderHistory(historyStore).load(book.id);
-      } catch (_) {
-        // An unavailable history store must not block cached chapters.
-      }
-      final cached = await _store.cachedChapterIds(book.id);
-      if (!mounted) return;
-      if (cached.isEmpty) {
-        await _reload();
-        return;
-      }
-      var index = book.chapters.indexWhere(
-        (chapter) => chapter.itemId == saved?['chapterId']?.toString(),
-      );
-      if (index < 0) {
-        final episode = num.tryParse(saved?['episode']?.toString() ?? '');
-        index = (episode != null && episode.isFinite ? episode.toInt() : 0)
-            .clamp(0, book.chapters.length - 1);
-      }
-      if (!cached.contains(book.chapters[index].itemId)) {
-        index = book.chapters.indexWhere(
-          (chapter) => cached.contains(chapter.itemId),
-        );
-      }
-      if (index < 0) return;
-      await Navigator.push(
+      final opened = await openCachedBook(
         context,
-        MaterialPageRoute<void>(
-          builder: (_) => ReaderPage(
-            bookId: book.id,
-            title: book.title,
-            cover: book.cover,
-            chapters: book.chapters,
-            startIndex: index,
-            chapterCache: _store,
-            readerStore: historyStore,
-          ),
-        ),
+        book: book,
+        cache: _store,
+        readerStore: widget.readerStore,
       );
+      // 目录与章节对不上（章节已被逐出）时刷新列表，别让一行点不动又没反馈。
+      if (!opened && mounted) await _reload();
     } catch (_) {
       if (mounted) {
         ScaffoldMessenger.of(

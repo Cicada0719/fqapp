@@ -22,6 +22,11 @@ abstract interface class ChapterCache {
   });
   Future<void> saveBook(CachedBook book);
   Future<Set<String>> cachedChapterIds(String bookId);
+  /// [bookId] 的缓存目录，只在它确实还有缓存章节时返回；目录本身被清掉时用
+  /// 缓存章节重建。null 表示这本书没有可离线阅读的正文。
+  ///
+  /// 书架点书与详情页兜底只关心一本书，用它比 [books] 便宜。
+  Future<CachedBook?> cachedBook(String bookId);
 
   /// Chapters the automatic cache keeps before evicting the least recently read
   /// ones. Chapters written with `pinned: true` are outside this budget.
@@ -277,7 +282,22 @@ class ChapterCacheStore implements ChapterCache {
     return ChapterCacheStats(chapterCount: chapters, byteCount: bytes);
   });
 
-  Future<List<CachedBookSummary>> books() => _serialize((box) async {
+  Future<List<CachedBookSummary>> books() =>
+      _serialize((box) async => _summaries(box));
+
+  @override
+  Future<CachedBook?> cachedBook(String bookId) => _serialize((box) async {
+    if (bookId.isEmpty) return null;
+    final summaries = _summaries(box, onlyBookId: bookId);
+    return summaries.isEmpty ? null : summaries.first.book;
+  });
+
+  /// 把章节记录按书聚合成摘要；[onlyBookId] 只统计一本书。
+  ///
+  /// A batch's catalogue can be evicted while later chapters for the same book
+  /// still land; rebuild the summary from those chapters so the offline entry
+  /// stays discoverable instead of orphaning them.
+  List<CachedBookSummary> _summaries(Box<dynamic> box, {String? onlyBookId}) {
     final counts = <String, int>{};
     final bytes = <String, int>{};
     final accessed = <String, num>{};
@@ -285,6 +305,7 @@ class ChapterCacheStore implements ChapterCache {
     for (final value in box.values) {
       if (!_isChapter(value)) continue;
       final id = value['bookId'] as String;
+      if (onlyBookId != null && id != onlyBookId) continue;
       counts[id] = (counts[id] ?? 0) + 1;
       bytes[id] = (bytes[id] ?? 0) + _bytes(value as Map);
       final time = _accessedAt(value);
@@ -299,9 +320,6 @@ class ChapterCacheStore implements ChapterCache {
     }
     final books = <CachedBookSummary>[];
     for (final id in counts.keys) {
-      // A batch's catalogue can be evicted while later chapters for the same
-      // book still land; rebuild the summary from those chapters so the
-      // offline entry stays discoverable instead of orphaning them.
       final book =
           CachedBook.fromMap(box.get('book:$id')) ??
           CachedBook(id: id, title: id, chapters: chaptersByBook[id]!);
@@ -316,7 +334,7 @@ class ChapterCacheStore implements ChapterCache {
       (a, b) => (accessed[b.book.id] ?? 0).compareTo(accessed[a.book.id] ?? 0),
     );
     return books;
-  });
+  }
 
   Future<void> clear({String? bookId}) => _serialize((box) async {
     if (bookId == null) {

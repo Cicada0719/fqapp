@@ -34,6 +34,7 @@ import '../widgets/home/home_media_card.dart';
 import '../widgets/media_card.dart';
 import 'audio_page.dart';
 import 'author_page.dart';
+import 'cached_book_reader.dart';
 import 'comic_reader_page.dart';
 import 'player_page.dart';
 import 'reader_page.dart';
@@ -151,6 +152,8 @@ class _DetailPageState extends State<DetailPage> {
   int? _resumeIndex;
   bool _opening = false;
   ChapterDownload? _download;
+  /// 目录联网失败时查到的本地整本缓存；非空即给出「从缓存阅读」入口。
+  CachedBook? _cachedBook;
 
   bool get _supported => kindLabels.containsKey(widget.item.kind);
   bool get _isVideo => isVideoKind(widget.item.kind);
@@ -244,6 +247,7 @@ class _DetailPageState extends State<DetailPage> {
         _chapterPreviews = ChapterSummary.empty;
         _opening = false;
         _resumeIndex = null;
+        _cachedBook = null;
       });
     }
 
@@ -296,7 +300,12 @@ class _DetailPageState extends State<DetailPage> {
     }
 
     if (volumes.isEmpty && directoryResult.error != null) {
+      // 联网取目录失败：先看本地有没有整本缓存。有就把「从缓存阅读」的入口
+      // 摆出来，而不是只给一个离线时永远不会成功的重试按钮。
+      final cached = _isBook ? await _cachedCatalogue() : null;
+      if (!mounted || generation != _loadGeneration) return;
       setState(() {
+        _cachedBook = cached;
         _error = userFacingError(directoryResult.error!);
         _loading = false;
       });
@@ -566,8 +575,13 @@ class _DetailPageState extends State<DetailPage> {
                           ? _stateCard(
                               icon: LucideIcons.wifi_off,
                               title: '暂时没能加载章节',
-                              message: '请检查网络连接，再试一次。',
+                              message: _cachedBook == null
+                                  ? '请检查网络连接，再试一次。'
+                                  : '网络不可用。这本书已经下载到本地，可以直接离线阅读。',
                               retry: true,
+                              onReadCached: _cachedBook == null
+                                  ? null
+                                  : _readCached,
                             )
                           : _content(palette),
                     ),
@@ -692,6 +706,7 @@ class _DetailPageState extends State<DetailPage> {
     required String title,
     required String message,
     bool retry = false,
+    VoidCallback? onReadCached,
   }) {
     final palette = HomePalette.of(context);
     return Container(
@@ -721,6 +736,22 @@ class _DetailPageState extends State<DetailPage> {
             textAlign: TextAlign.center,
             style: TextStyle(color: palette.muted, fontSize: 13, height: 1.6),
           ),
+          // 联网路径失败但本地有整本缓存时，先把「能读」摆出来再谈重试：
+          // 离线时重试永远不会成功。
+          if (onReadCached != null) ...[
+            const SizedBox(height: 16),
+            FilledButton.icon(
+              key: const Key('detail_read_cached'),
+              onPressed: onReadCached,
+              style: FilledButton.styleFrom(
+                backgroundColor: HomePalette.accent,
+                foregroundColor: Colors.white,
+                minimumSize: const Size(110, 48),
+              ),
+              icon: const Icon(LucideIcons.book_open, size: 16),
+              label: const Text('从缓存阅读'),
+            ),
+          ],
           if (retry) ...[
             const SizedBox(height: 16),
             OutlinedButton.icon(
@@ -1049,6 +1080,32 @@ class _DetailPageState extends State<DetailPage> {
       MaterialPageRoute<void>(builder: (_) => page),
     );
     if (mounted) unawaited(_refreshResume());
+  }
+
+  /// 本地整本缓存：目录请求失败时用它兜底，让已下载的书仍能离线阅读。
+  Future<CachedBook?> _cachedCatalogue() async {
+    try {
+      return await (widget.chapterCache ?? ChapterCacheStore.instance)
+          .cachedBook(_contentId);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _readCached() async {
+    final book = _cachedBook;
+    if (book == null) return;
+    final opened = await openCachedBook(
+      context,
+      book: book,
+      cache: widget.chapterCache,
+      readerStore: widget.readerStore,
+    );
+    if (!opened && mounted) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('缓存已失效，请联网后重试')));
+    }
   }
 }
 
