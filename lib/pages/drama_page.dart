@@ -868,9 +868,9 @@ class _DramaPageState extends ConsumerState<DramaPage>
   /// 清晰度切换（官方 `bgw`）：Toast 立即出，不等换流完成。
   void _switchFeedQuality(EpisodeVariant variant) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('清晰度已成功切换至${variant.name}')),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text('清晰度已成功切换至${variant.name}')));
     unawaited(_inline.switchVariant(variant));
   }
 
@@ -1045,9 +1045,7 @@ class _DramaPageState extends ConsumerState<DramaPage>
   /// 弹幕取数：与播放页同一条接口（`:group_id` = vid，series 进
   /// `business_param.book_id`，时间毫秒）。seriesId 按 vid 回查：在飞的
   /// 旧请求在切剧后完成时也不会误挂新剧的 id。
-  Future<PlayletCommentPage> _fetchFeedDanmaku(
-    DanmakuFetchRequest request,
-  ) {
+  Future<PlayletCommentPage> _fetchFeedDanmaku(DanmakuFetchRequest request) {
     final flight = BackendRequest();
     _feedDanmakuFlight = flight;
     return ApiClient.instance.withCancellation(flight, () {
@@ -1601,11 +1599,7 @@ class _DramaPageState extends ConsumerState<DramaPage>
       historyStore: widget.historyStore,
       onEpisodeSelected: (index, episodes) {
         unawaited(
-          _openPlayer(
-            item,
-            startEpisodeIndex: index,
-            loadedEpisodes: episodes,
-          ),
+          _openPlayer(item, startEpisodeIndex: index, loadedEpisodes: episodes),
         );
       },
       onFullscreen: () => unawaited(_openPlayer(item)),
@@ -2162,10 +2156,7 @@ class _PlayPauseFeedback extends StatelessWidget {
                 decoration: BoxDecoration(
                   color: const Color(0x59000000),
                   shape: BoxShape.circle,
-                  border: Border.all(
-                    color: const Color(0x33FFFFFF),
-                    width: 1,
-                  ),
+                  border: Border.all(color: const Color(0x33FFFFFF), width: 1),
                   boxShadow: const [
                     BoxShadow(
                       color: Color(0x33000000),
@@ -2424,11 +2415,7 @@ class _RateHint extends StatelessWidget {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: const [
-              Icon(
-                LucideIcons.fast_forward,
-                size: 18,
-                color: Colors.white,
-              ),
+              Icon(LucideIcons.fast_forward, size: 18, color: Colors.white),
               SizedBox(width: 8),
               Text(
                 '2倍速快进中',
@@ -2574,10 +2561,7 @@ class _SeekTrackState extends State<_SeekTrack> {
                       decoration: BoxDecoration(
                         color: const Color(0xE6000000),
                         borderRadius: BorderRadius.circular(12),
-                        border: Border.all(
-                          color: Colors.white24,
-                          width: 0.5,
-                        ),
+                        border: Border.all(color: Colors.white24, width: 0.5),
                         boxShadow: const [
                           BoxShadow(
                             color: Colors.black45,
@@ -3232,6 +3216,7 @@ class _InlineVideoLayer extends StatelessWidget {
             // A card the session is not playing (yet) shows its cover only.
             if (playback.activeId.value != item.id) return cover;
             final textureId = playback.textureId.value;
+            final videoSize = playback.videoSize.value;
             final layout = PlayerVideoLayout.calculate(
               window: window,
               insets: EdgeInsets.zero,
@@ -3264,7 +3249,13 @@ class _InlineVideoLayer extends StatelessWidget {
                       ),
                     ),
                   ),
-                if (textureId == null || !playback.firstFrame.value) cover,
+                // A first-frame event may beat the size event. Never expose a
+                // new texture through the 9:16 fallback (or stale geometry).
+                if (textureId == null ||
+                    !playback.firstFrame.value ||
+                    videoSize.width <= 0 ||
+                    videoSize.height <= 0)
+                  cover,
               ],
             );
           },

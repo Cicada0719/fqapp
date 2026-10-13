@@ -81,6 +81,7 @@ class LibraryStore implements ReaderStore {
 
   static const _histBoxName = 'history';
   static const _readTimeBoxName = 'read_time';
+
   /// 已看集（按剧集/视频 id）。官方把「这一集看过」存在
   /// `video_progress` 一族 SP 里、以 vid 为键（`com/dragon/read/video/d.java:18-20`
   /// 的 `video_progress` / `video_progress_time` / `video_newly_update_vids`），
@@ -129,6 +130,7 @@ class LibraryStore implements ReaderStore {
       _readTimeBox.listenable();
 
   Future<void> init() async {
+    _writes = Future<void>.value();
     _histBox = await Hive.openBox(_histBoxName);
     _readTimeBox = await Hive.openBox(_readTimeBoxName);
     _watchedBox = await Hive.openBox(_watchedBoxName);

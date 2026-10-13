@@ -128,9 +128,7 @@ class InlineVideoPlayback {
   /// The final seek target of the last seek（官方 `ON_SEEK_FINISH`）。拖动
   /// 进度条、换画质回跳都用它通知弹幕调度器清游标补数；值本身没有
   /// 「消费一次」的语义，页面侧按需要读取。
-  final ValueNotifier<Duration> seeked = ValueNotifier<Duration>(
-    Duration.zero,
-  );
+  final ValueNotifier<Duration> seeked = ValueNotifier<Duration>(Duration.zero);
 
   /// Video pixel size of the current episode, `Size.zero` until the decoder
   /// reports one. The feed lays the texture out with the same contain rule as
@@ -154,8 +152,7 @@ class InlineVideoPlayback {
   /// 入池那一刻每部剧正在播的目录与集号，键与 [PlayerPool] 一致。复用
   /// 出池时还原——否则 `_episodes`/`_activeIndex` 还停留在新激活的剧上，
   /// 之后一次进度持久化就会把别的剧的 episodeId 写进这部剧的历史。
-  final Map<String, ({List<Chapter> episodes, int index})> _parkedPlayback =
-      {};
+  final Map<String, ({List<Chapter> episodes, int index})> _parkedPlayback = {};
   final List<StreamSubscription<dynamic>> _subs = [];
   Future<void> _releases = Future<void>.value();
 
@@ -359,8 +356,11 @@ class InlineVideoPlayback {
         // Local storage is optional for starting a video.
       }
       if (!_current(generation)) return;
-      final index = (startEpisodeIndex ?? resumeEpisodeIndex(saved, episodes) ?? 0)
-          .clamp(0, episodes.length - 1);
+      final index =
+          (startEpisodeIndex ?? resumeEpisodeIndex(saved, episodes) ?? 0).clamp(
+            0,
+            episodes.length - 1,
+          );
       _episodes = episodes;
       _activeIndex = index;
       // 听书回传的位置先挂上进度条再等首帧；弹幕调度器读 [position] 做
@@ -474,6 +474,12 @@ class InlineVideoPlayback {
     if (identical(_player, player)) _player = null;
     _currentSource = source.withVariant(variant);
     _chosen[series.id] = variant;
+    // A replacement texture must not inherit the previous rendition's frame,
+    // size, or rotation. The layer keeps its cover until the new stream is ready.
+    textureId.value = null;
+    firstFrame.value = false;
+    videoSize.value = Size.zero;
+    rotation.value = 0;
     var release = _releases;
     NativePlayer? candidate;
     try {
@@ -533,7 +539,6 @@ class InlineVideoPlayback {
       // Speculative prefetch errors are silent.
     }
   }
-
 
   /// Drop the player subscriptions without touching the player itself. Used
   /// when a player is parked: it must stop feeding this session's notifiers,

@@ -311,6 +311,21 @@ void main() {
     });
   }
 
+  testWidgets('the full-page texture stays covered until its size is known', (
+    tester,
+  ) async {
+    final player = await _mount(tester, videoSize: Size.zero, settle: false);
+    expect(find.byKey(const ValueKey('player-cover')), findsOneWidget);
+
+    // Native playback may report its first frame before the video-size event.
+    // The cover must remain until the layout has the real rendition geometry.
+    player.emitVideoSize(1920, 1080);
+    await tester.pump();
+    expect(find.byKey(const ValueKey('player-cover')), findsNothing);
+    expect(find.byKey(const ValueKey('player-texture')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets(
     'texture rotation preserves portrait layout through panel animation',
     (tester) async {
@@ -345,53 +360,48 @@ void main() {
     },
   );
 
-  testWidgets(
-    'switching an episode from the panel restores the resting layout',
-    (tester) async {
-      final player = await _mount(tester, shortSeries: true);
-      await tester.tap(find.byKey(const ValueKey('player-catalog-bar')));
-      await tester.pump();
-      for (final ms in [50, 100, 100, 100, 50]) {
-        await tester.pump(Duration(milliseconds: ms));
-        debugPrint(
-          'DIAG t=$ms panelRect=${tester.getRect(find.byKey(const ValueKey('story-panel'), skipOffstage: false))}',
-        );
-      }
-      await tester.pump();
-      final openRect = tester.getRect(
-        find.byKey(const ValueKey('video-frame')),
-      );
-      // 面板展开时画面被压到上部（transition=1：viewport 只剩面板上方）。
-      expect(openRect.height, lessThan(500));
+  testWidgets('switching an episode from the panel restores the resting layout', (
+    tester,
+  ) async {
+    final player = await _mount(tester, shortSeries: true);
+    await tester.tap(find.byKey(const ValueKey('player-catalog-bar')));
+    await tester.pump();
+    for (final ms in [50, 100, 100, 100, 50]) {
+      await tester.pump(Duration(milliseconds: ms));
       debugPrint(
-        'DIAG panel=${find.byKey(const ValueKey('story-panel')).evaluate().length} '
-        'scrim=${find.byKey(const ValueKey('story-panel-scrim')).evaluate().length} '
-        'episodes=${find.byKey(const ValueKey('story-episode-2'), skipOffstage: false).evaluate().length} '
-        'grid=${find.byKey(const ValueKey('story-episode-grid'), skipOffstage: false).evaluate().length} '
-        'panelRect=${tester.getRect(find.byKey(const ValueKey('story-panel')))}',
+        'DIAG t=$ms panelRect=${tester.getRect(find.byKey(const ValueKey('story-panel'), skipOffstage: false))}',
       );
+    }
+    await tester.pump();
+    final openRect = tester.getRect(find.byKey(const ValueKey('video-frame')));
+    // 面板展开时画面被压到上部（transition=1：viewport 只剩面板上方）。
+    expect(openRect.height, lessThan(500));
+    debugPrint(
+      'DIAG panel=${find.byKey(const ValueKey('story-panel')).evaluate().length} '
+      'scrim=${find.byKey(const ValueKey('story-panel-scrim')).evaluate().length} '
+      'episodes=${find.byKey(const ValueKey('story-episode-2'), skipOffstage: false).evaluate().length} '
+      'grid=${find.byKey(const ValueKey('story-episode-grid'), skipOffstage: false).evaluate().length} '
+      'panelRect=${tester.getRect(find.byKey(const ValueKey('story-panel')))}',
+    );
 
-      // 面板里点另一集：收面板动画与换集加载并行——真机上这里出现过
-      // 视频停在中间布局、点一下屏幕才恢复的竞态。
-      player.emitPosition(const Duration(seconds: 1));
-      await tester.tap(find.byKey(const ValueKey('story-episode-2')));
-      for (var frame = 0; frame < 24; frame++) {
-        await tester.pump(const Duration(milliseconds: 50));
-      }
-      // 不能 pumpAndSettle：换集加载中 loading spinner 是循环动画。
+    // 面板里点另一集：收面板动画与换集加载并行——真机上这里出现过
+    // 视频停在中间布局、点一下屏幕才恢复的竞态。
+    player.emitPosition(const Duration(seconds: 1));
+    await tester.tap(find.byKey(const ValueKey('story-episode-2')));
+    for (var frame = 0; frame < 24; frame++) {
+      await tester.pump(const Duration(milliseconds: 50));
+    }
+    // 不能 pumpAndSettle：换集加载中 loading spinner 是循环动画。
 
-      // 面板必须完全收起，画面回到 rest 布局（与跳集前的静止布局一致）。
-      expect(find.byKey(const ValueKey('story-panel-scrim')), findsNothing);
-      expect(find.byKey(const ValueKey('story-panel')), findsNothing);
-      // 面板收起后回到 rest 布局：viewport = [44, 800-163]，比展开态更大。
-      final restored = tester.getRect(
-        find.byKey(const ValueKey('video-frame')),
-      );
-      expect(restored.height, greaterThan(openRect.height));
-      expect(restored.top, closeTo(44, .5));
-      expect(tester.takeException(), isNull);
-    },
-  );
+    // 面板必须完全收起，画面回到 rest 布局（与跳集前的静止布局一致）。
+    expect(find.byKey(const ValueKey('story-panel-scrim')), findsNothing);
+    expect(find.byKey(const ValueKey('story-panel')), findsNothing);
+    // 面板收起后回到 rest 布局：viewport = [44, 800-163]，比展开态更大。
+    final restored = tester.getRect(find.byKey(const ValueKey('video-frame')));
+    expect(restored.height, greaterThan(openRect.height));
+    expect(restored.top, closeTo(44, .5));
+    expect(tester.takeException(), isNull);
+  });
 }
 
 class _RotatedPlayer extends ControlledNativePlayer {
@@ -419,6 +429,7 @@ Future<ControlledNativePlayer> _mount(
   Size videoSize = const Size(1080, 1920),
   ControlledNativePlayer? player,
   bool shortSeries = false,
+  bool settle = true,
 }) async {
   final activePlayer = (player ?? ControlledNativePlayer())
     ..width = videoSize.width.toInt()
@@ -455,6 +466,12 @@ Future<ControlledNativePlayer> _mount(
   );
   await tester.pump();
   await tester.runAsync(() => Future<void>.delayed(Duration.zero));
-  await tester.pumpAndSettle();
+  if (settle) {
+    await tester.pumpAndSettle();
+  } else {
+    for (var frame = 0; frame < 8; frame++) {
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+  }
   return activePlayer;
 }
