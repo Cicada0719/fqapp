@@ -35,17 +35,17 @@
 
 ## 3. 验证：按改动选择，控制成本
 
-**不要跑全量或浪费时间的测试。** 此规则适用于 Flutter、Rust、JVM、CI 等所有测试入口：只执行与本次改动直接相关且必要的最小验证，禁止无关、重复或耗时却缺乏实际验证价值的检查。不得以“门禁”“惯例”或“保险起见”为由启动全量回归；除非用户后续明确要求，否则持续遵守。必要检查通过后停止，出现具体失败或新风险时只补充针对性检查。
+**不要跑测试。** 除非用户当前轮次明确下达指令要求跑测试，否则**严禁擅自执行任何测试套件**（包括 `flutter test`、`cargo test`、JVM 测试等），无论全量还是定向。不要以“门禁”、“确认回归”、“保险起见”为由启动测试；代码修改后仅做必要的静态分析（`flutter analyze --no-pub`、`git diff --check`）与语法/类型排查，不要跑测试。
 
 | 改动面 | 验证方式 |
 | --- | --- |
-| 纯文档、注释、排版 | 检查差异、路径和命令准确性，执行 `git diff --check`；不构建、不跑应用测试、不递增版本 |
-| Flutter / Dart 逻辑 | `flutter analyze --no-pub`；有实际回归风险时选择相关文件执行 `flutter test --no-pub --concurrency=2 test/<相关文件>_test.dart` |
-| Android 插件 / Kotlin | 选择相关编译任务或具体 JVM 用例；涉及系统 UI、通知、生命周期时按需做真机验收 |
-| Rust | 逐文件检查手写 `.rs` 的格式，执行相关测试（如 `cargo test --manifest-path rust/Cargo.toml --locked --test <测试目标>`）；公共核心或接口变化时再选择 Clippy、扩大回归范围 |
-| FRB 接口 / 绑定 | 用 2.13.0 codegen 生成，重复生成并比较内容哈希，证明本次生成结果可复现；同时验证受影响的 Dart / Rust 调用 |
-| C / 构建脚本 / 资源 | 从 `native/README.md`、`scripts/README.md` 选择对应检查，不自动运行其中全部命令 |
-| APK 交付 | 构建并检查签名、库、版本、资源和 16 KiB 对齐；功能验收另行记录 |
+| 纯文档、注释、排版 | 检查差异、路径和命令准确性，执行 `git diff --check`；不构建、不跑测试、不递增版本 |
+| Flutter / Dart 逻辑 | `flutter analyze --no-pub` 静态排查；**不跑 flutter test**，除非用户明确要求 |
+| Android 插件 / Kotlin | 选择相关编译任务排查；涉及系统 UI、生命周期时按需做真机验收，**不跑单元测试** |
+| Rust | 检查 `.rs` 格式与 Clippy 静态检查；**不跑 cargo test**，除非用户明确要求 |
+| FRB 接口 / 绑定 | 用 2.13.0 codegen 生成，验证代码生成一致性；不跑应用测试 |
+| C / 构建脚本 / 资源 | 静态差异检查；不自动运行测试脚本 |
+| APK 交付 | 构建并检查签名、库、版本、资源和 16 KiB 对齐；真机由用户或按需验收 |
 
 - Rust 格式检查使用 `rustfmt --check --edition 2021 --config skip_children=true <文件>`。覆盖检查时枚举 Git 跟踪的全部手写 `.rs`，并包含本轮新增文件；排除 `frb_generated.rs`。禁止使用 `cargo fmt --all -- --check`，也不能只查 `rust/src/lib.rs` 冒充全部检查。
 - 需要 Clippy 时使用 `cargo clippy --manifest-path rust/Cargo.toml --locked --all-targets -- -D warnings`。协议实现变更必须覆盖受影响的黄金夹具，未执行部分如实列出。
