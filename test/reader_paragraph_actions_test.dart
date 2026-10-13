@@ -14,7 +14,6 @@ import 'package:fqapp/widgets/reader/reader_paged_view.dart';
 import 'package:fqapp/widgets/reader/reader_paragraph_menu.dart';
 import 'package:fqapp/widgets/reader/reader_text_selection.dart';
 
-
 import 'support/fakes.dart';
 
 const _html =
@@ -101,12 +100,17 @@ class _MemoryUnderlines extends ReaderUnderlineStore {
   }
 }
 
-Widget _app(ReaderUnderlineStore store, {String? html}) => MaterialApp(
+Widget _app(
+  ReaderUnderlineStore store, {
+  String? html,
+  bool localOnly = false,
+}) => MaterialApp(
   home: ReaderPage(
     bookId: 'reader-test',
     title: '测试书籍',
     chapters: _chapters,
     startIndex: 0,
+    localOnly: localOnly,
     readerStore: MemoryReaderStore(),
     chapterCache: MemoryChapterCache(),
     chapterLoader: (_) async =>
@@ -141,13 +145,12 @@ Future<void> _dragEndHandleIntoNextParagraph(WidgetTester tester) async {
 
 /// The mark painter of the block whose text contains [textHint].
 ReaderBlockMarkPainter? _painterFor(WidgetTester tester, String textHint) {
-  for (final custom
-      in tester.widgetList<CustomPaint>(
-        find.byWidgetPredicate(
-          (widget) =>
-              widget is CustomPaint && widget.painter is ReaderBlockMarkPainter,
-        ),
-      )) {
+  for (final custom in tester.widgetList<CustomPaint>(
+    find.byWidgetPredicate(
+      (widget) =>
+          widget is CustomPaint && widget.painter is ReaderBlockMarkPainter,
+    ),
+  )) {
     final painter = custom.painter! as ReaderBlockMarkPainter;
     if (painter.block.text.contains(textHint)) return painter;
   }
@@ -401,13 +404,7 @@ void main() {
     expect(decoded.contains(2, 9), isFalse);
     // Malformed or half-shaped maps never resurrect a record.
     expect(ReaderRangeUnderline.fromMap(<String, dynamic>{}), isNull);
-    expect(
-      ReaderRangeUnderline.fromMap({
-        ...record.toMap(),
-        'end': 2,
-      }),
-      isNull,
-    );
+    expect(ReaderRangeUnderline.fromMap({...record.toMap(), 'end': 2}), isNull);
   });
 
   testWidgets('a chapter without paragraph ids still offers the menu', (
@@ -422,9 +419,9 @@ void main() {
     // Upstream gave no ids, so paragraphs fall back to their ordinal.
     final content = parseChapterContent(plainHtml);
     expect(
-      content.blocks
-          .whereType<ChapterParagraph>()
-          .every((p) => p.paraIndex == null),
+      content.blocks.whereType<ChapterParagraph>().every(
+        (p) => p.paraIndex == null,
+      ),
       isTrue,
     );
 
@@ -481,6 +478,23 @@ void main() {
     expect(find.text('取消划线'), findsNothing);
     await tester.tapAt(const Offset(200, 60));
     await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('local-only paragraph actions omit 从本段听', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(400, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(_app(_MemoryUnderlines(), localOnly: true));
+    await tester.pumpAndSettle();
+
+    await _longPressParagraph(tester, 0);
+    expect(find.byKey(const ValueKey('reader-action-copy')), findsOneWidget);
+    expect(find.byKey(const ValueKey('reader-action-listen')), findsNothing);
+    expect(find.text('从本段听'), findsNothing);
+    expect(
+      find.byKey(const ValueKey('reader-action-underline')),
+      findsOneWidget,
+    );
     expect(tester.takeException(), isNull);
   });
 
@@ -720,7 +734,9 @@ void main() {
     );
     // The end of the wrapped paragraph's last line: the offset under the
     // finger lands exactly on the selection's end bound — the old collapse.
-    final line = tester.getRect(find.byKey(const ValueKey('reader-paragraph-0')));
+    final line = tester.getRect(
+      find.byKey(const ValueKey('reader-paragraph-0')),
+    );
     final goal = Offset(line.right - 10, line.bottom - 8);
     final gesture = await tester.startGesture(start);
     for (var i = 1; i <= 12; i++) {
@@ -796,7 +812,9 @@ void main() {
     await tester.pumpWidget(_app(store, html: _longHtml));
     await tester.pumpAndSettle();
 
-    final line = tester.getRect(find.byKey(const ValueKey('reader-paragraph-0')));
+    final line = tester.getRect(
+      find.byKey(const ValueKey('reader-paragraph-0')),
+    );
     await tester.longPressAt(Offset(line.left + 20, line.top + 15));
     await tester.pumpAndSettle();
 
