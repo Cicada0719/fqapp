@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:fqapp/models/media_item.dart';
 import 'package:fqapp/widgets/bookshelf_card.dart';
+import 'package:fqapp/widgets/shelf/shelf_design.dart';
 
 void main() {
   test('每种内容类型都有中文标签', () {
@@ -15,7 +16,7 @@ void main() {
     expect(bookshelfKindLabel('unknown'), 'unknown');
   });
 
-  testWidgets('宫格封面按官方 1.3947369 比例并带圆角与角标', (tester) async {
+  testWidgets('宫格封面按 1.4 比例、圆角 10 并带进度角标', (tester) async {
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
@@ -37,8 +38,8 @@ void main() {
 
     final cover = tester.getSize(find.byKey(const Key('bookshelf-cover')));
     expect(cover.width, 200);
-    expect(cover.height, closeTo(200 * bookshelfGridCoverRatio, 0.01));
-    // 圆角 12dp。
+    expect(cover.height, closeTo(200 * ShelfTokens.gridCoverRatio, 0.01));
+    // 圆角走 ShelfTokens.radiusCover（10dp）。
     final clip = tester.widget<ClipRRect>(
       find
           .descendant(
@@ -47,7 +48,7 @@ void main() {
           )
           .first,
     );
-    expect(clip.borderRadius, BorderRadius.circular(12));
+    expect(clip.borderRadius, BorderRadius.circular(ShelfTokens.radiusCover));
     expect(find.text('35%'), findsOneWidget);
     expect(find.text('第12章 · 35%'), findsOneWidget);
     expect(find.text('宫格作品'), findsOneWidget);
@@ -61,7 +62,7 @@ void main() {
           body: Center(
             child: SizedBox(
               width: 120,
-              height: 320,
+              height: 360,
               child: BookshelfGridCard(
                 item: _item('宫格作品'),
                 badgeText: '35%',
@@ -80,7 +81,7 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('列表条目是 110dp 行高加 60×90 封面', (tester) async {
+  testWidgets('列表条目是 84dp 行高加 56×78 封面', (tester) async {
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
@@ -100,20 +101,20 @@ void main() {
 
     expect(
       tester.getSize(find.byType(BookshelfListCard)).height,
-      bookshelfListRowHeight,
+      ShelfTokens.listRowHeight,
     );
     final cover = tester.getSize(find.byKey(const Key('bookshelf-cover')));
-    expect(cover.width, bookshelfListCoverWidth);
-    expect(cover.height, bookshelfListCoverHeight);
-    // 封面 marginStart 20dp。
+    expect(cover.width, ShelfTokens.listCoverWidth);
+    expect(cover.height, ShelfTokens.listCoverHeight);
+    // 行内边距走统一的 screenPadding（16dp）。
     final card = tester.getRect(find.byType(BookshelfListCard));
     expect(
       tester.getRect(find.byKey(const Key('bookshelf-cover'))).left - card.left,
-      bookshelfListSidePadding,
+      ShelfTokens.screenPadding,
     );
     expect(
       tester.widget<Text>(find.text('列表作品')).style?.fontSize,
-      15,
+      ShelfTokens.titleList,
     );
     expect(tester.takeException(), isNull);
   });
@@ -137,28 +138,70 @@ void main() {
     );
 
     expect(find.byIcon(Icons.check), findsOneWidget);
-    // 20dp 外边距 + 22dp 多选框 + 20dp marginEnd。
+    // 16dp 行内边距 + 22dp 多选框 + 12dp 间距。
     final cover = tester.getRect(find.byKey(const Key('bookshelf-cover')));
     expect(
       cover.left - tester.getRect(find.byType(BookshelfListCard)).left,
-      bookshelfListSidePadding + 22 + 20,
+      ShelfTokens.screenPadding + 22 + ShelfTokens.spaceM,
     );
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('双列条目使用 110×162 封面并保留信息槽位', (tester) async {
+  testWidgets('列表行有进度时渲染 3dp 进度条，无进度时不存在', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ListView(
+            children: [
+              BookshelfListCard(
+                item: _item('有进度'),
+                progress: 0.35,
+                progressText: '第12章 · 35%',
+                onTap: () {},
+              ),
+              BookshelfListCard(item: _item('无进度'), onTap: () {}),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    final bar = find.byKey(const Key('shelf-list-progress'));
+    expect(bar, findsOneWidget);
+    expect(tester.getSize(bar).height, ShelfTokens.listProgressHeight);
+    // 进度条属于第一行（「有进度」），不影响第二行。
+    expect(
+      tester.getTopLeft(bar).dy,
+      lessThan(tester.getTopLeft(find.text('无进度')).dy),
+    );
+    expect(tester.takeException(), isNull);
+
+    // 无进度值的卡不渲染进度条。
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ListView(
+            children: [BookshelfListCard(item: _item('无进度'), onTap: () {})],
+          ),
+        ),
+      ),
+    );
+    expect(find.byKey(const Key('shelf-list-progress')), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('双列整卡无重叠：封面满宽（减 padding）、比例 1.4、信息块在封面下方', (tester) async {
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
           body: Center(
             child: SizedBox(
               width: 162,
-              height: 500,
+              height: 620,
               child: BookshelfDoubleCard(
                 item: _item('双列作品'),
                 badgeText: '35%',
                 subtitleText: '测试作者',
-                infoLines: const ['第12章 · 35%', '共 120章'],
                 onTap: () {},
               ),
             ),
@@ -167,17 +210,28 @@ void main() {
       ),
     );
 
-    final cover = tester.getSize(find.byKey(const Key('bookshelf-cover')));
-    expect(cover.width, bookshelfDoubleCoverWidth);
-    expect(cover.height, bookshelfDoubleCoverHeight);
+    final card = find.byKey(const Key('shelf-double-card'));
+    expect(card, findsOneWidget);
+    final cellWidth = tester.getSize(card).width;
+    final coverRect = tester.getRect(find.byKey(const Key('bookshelf-cover')));
+    // 封面 = 满格宽减卡片两侧 padding。
     expect(
-      tester.getRect(find.byKey(const Key('bookshelf-cover'))).left -
-          tester.getRect(find.byType(BookshelfDoubleCard)).left,
-      12,
+      coverRect.width,
+      closeTo(cellWidth - ShelfTokens.doubleCardPadding * 2, 0.01),
     );
-    expect(tester.widget<Text>(find.text('双列作品')).style?.fontSize, 16);
-    expect(find.text('第12章 · 35%'), findsOneWidget);
-    expect(find.text('共 120章'), findsOneWidget);
+    expect(
+      coverRect.height / coverRect.width,
+      closeTo(ShelfTokens.doubleCoverRatio, 0.01),
+    );
+    // 顺排布局（取消官方 84dp 重叠栈）：标题顶边必须不高于封面底边。
+    expect(
+      tester.getTopLeft(find.text('双列作品')).dy,
+      greaterThanOrEqualTo(coverRect.bottom),
+    );
+    // 类型标签来自真实 kind 数据。
+    expect(find.text('小说'), findsOneWidget);
+    expect(find.text('35%'), findsOneWidget);
+    expect(find.text('测试作者'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -192,12 +246,14 @@ void main() {
           child: Scaffold(
             body: LayoutBuilder(
               builder: (context, constraints) => GridView.builder(
-                padding: const EdgeInsets.symmetric(horizontal: 20),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: ShelfTokens.screenPadding,
+                ),
                 gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: bookshelfGridColumns,
-                  crossAxisSpacing: bookshelfGridSpacing,
-                  mainAxisSpacing: bookshelfGridRunSpacing,
-                  childAspectRatio: bookshelfGridChildAspectRatio(
+                  crossAxisCount: ShelfTokens.gridColumns,
+                  crossAxisSpacing: ShelfTokens.gridSpacing,
+                  mainAxisSpacing: ShelfTokens.gridRunSpacing,
+                  childAspectRatio: shelfGridChildAspectRatio(
                     context,
                     availableWidth: constraints.maxWidth,
                   ),
@@ -225,13 +281,12 @@ void main() {
             body: LayoutBuilder(
               builder: (context, constraints) => GridView.builder(
                 padding: const EdgeInsets.symmetric(
-                  horizontal: bookshelfDoubleSidePadding,
+                  horizontal: ShelfTokens.screenPadding,
                 ),
                 gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
                   crossAxisCount: 2,
-                  crossAxisSpacing: bookshelfDoubleSpacing,
-                  mainAxisSpacing: bookshelfDoubleRunSpacing,
-                  childAspectRatio: bookshelfDoubleChildAspectRatio(
+                  crossAxisSpacing: ShelfTokens.gridSpacing,
+                  childAspectRatio: shelfDoubleChildAspectRatio(
                     context,
                     availableWidth: constraints.maxWidth,
                   ),
@@ -240,7 +295,6 @@ void main() {
                 itemBuilder: (_, index) => BookshelfDoubleCard(
                   item: _item('很长很长的书名用于验证双列排版$index'),
                   subtitleText: '测试作者',
-                  infoLines: const ['第12章 · 35%', '测试作者', '共 120章'],
                   onTap: () {},
                 ),
               ),

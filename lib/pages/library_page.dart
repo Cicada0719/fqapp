@@ -1,51 +1,69 @@
-// Note: 这是官方番茄免费小说 7.0.9.32 书架形态的本地复刻（双 tab + 页头 +
-// 三档版式 + 编辑态）；被砍掉的官方能力（分组/云同步/导入图书/最近删除/
-// 连载更新提醒）与版式偏好 key 的语义迁移见
+// 书架页：官方番茄免费小说书架形态的本地重设计（双 tab + 页头分层 +
+// 三档版式 + 编辑态）。设计 token、版式/排序枚举集中在
+// lib/widgets/shelf/shelf_design.dart（docs/system_design.md）。
+//
+// 不伪造能力：分组 / 云同步 / 导入图书 / 最近删除 / 连载更新提醒均无数据源，
+// 不放占位控件；书架内本地搜索也刻意不做（规模小，筛选胶囊 + 排序 + 顶栏
+// 全局搜索已覆盖，详见 system_design.md §2）。被砍掉的官方能力与版式偏好
+// key 的语义迁移见
 // .agents/notes/implemented/feature/2026-09-20-official-bookshelf.md
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_lucide/flutter_lucide.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/media_item.dart';
 import '../services/chapter_cache_store.dart';
 import '../services/connectivity_status.dart';
+import '../services/imported_book_store.dart';
 import '../services/library_store.dart';
 import '../services/media_history_store.dart';
+import '../services/reader_history.dart';
 import '../services/shelf_store.dart';
 import '../widgets/bookshelf_card.dart';
 import '../widgets/home/home_design.dart';
+import '../widgets/shelf/shelf_design.dart';
+import '../widgets/shelf/shelf_empty.dart';
 import 'cached_book_reader.dart';
 import 'cached_books_page.dart';
 import 'detail_page.dart';
+import 'reader_page.dart';
 import 'search_page.dart';
 
 /// 版式偏好：0 宫格 / 1 双列 / 2 列表，与 [BookshelfLayout] 的枚举下标一致。
 /// 6.0 以前的版本在这里存的是列数 (2..6)，读取时迁移成宫格。
 const _bookshelfLayoutPreference = 'bookshelf_layout';
 
-/// 底栏删除的官方色 `skin_color_red_delete_light`。
-const _deleteRed = Color(0xFFF43207);
-
 /// 顶栏一级 tab 的官方文案（amg.xml 的 SlidingTabLayout）。
 const _tabTitles = ['书架', '浏览历史'];
 
 enum _MenuAction {
-  switchGrid('切换为宫格', BookshelfLayout.grid),
-  switchDouble('切换为双列', BookshelfLayout.doubleColumn),
-  switchList('切换为列表', BookshelfLayout.list),
-  clearHistory('清空历史', null),
-  cachedBooks('离线缓存', null);
+  importBook('导入图书', null, LucideIcons.plus),
+  switchGrid('切换为宫格', BookshelfLayout.grid, LucideIcons.layout_grid),
+  switchDouble('切换为双列', BookshelfLayout.doubleColumn, LucideIcons.columns_2),
+  switchList('切换为列表', BookshelfLayout.list, LucideIcons.list),
+  clearHistory('清空历史', null, LucideIcons.trash),
+  cachedBooks('离线缓存', null, LucideIcons.download);
 
-  const _MenuAction(this.label, this.layout);
+  const _MenuAction(this.label, this.layout, this.icon);
 
   final String label;
   final BookshelfLayout? layout;
+  final IconData icon;
 }
 
-/// 书架页：顶部「书架 / 浏览历史」双 tab + 搜索 / 更多，书架 tab 带今日已读、
-/// 筛选与编辑；列表数据分别来自 [ShelfStore]（本地加入书架集合）与
-/// [LibraryStore]（阅读历史）。
+/// 页面动效时长统一入口：无障碍「移除动画」开启时全部退化为瞬时切换。
+Duration _motionDuration(BuildContext context, int milliseconds) =>
+    MediaQuery.disableAnimationsOf(context)
+    ? Duration.zero
+    : Duration(milliseconds: milliseconds);
+
+/// 书架页：L1 标题栏（tab + 搜索 + 更多；菜单承载版式/清空历史/离线缓存）/
+/// L2 工具栏（今日已读 + 版式分段）/ L3 内容区（三档版式）+ 编辑态
+/// （长按卡片进入，提供全选与移出书架）。
+/// 列表数据分别来自 [ShelfStore]（本地加入书架集合）与 [LibraryStore]
+/// （阅读历史）。
 class LibraryPage extends StatefulWidget {
   /// 空书架上的「去书城找书」要切到首页 tab；由 RootShell 注入，测试里可以为
   /// 空，此时按钮不响应。
@@ -73,14 +91,17 @@ class _LibraryPageState extends State<LibraryPage> {
   int _tab = 0;
   BookshelfLayout _layout = BookshelfLayout.grid;
   int _layoutGeneration = 0;
-  bool _filterOpen = false;
-  String? _kindFilter;
   bool _editing = false;
+  bool _importingBook = false;
   final Set<String> _selected = {};
   int _todayMinutes = 0;
   List<_ShelfEntry> _shelf = const [];
   List<_ShelfEntry> _browseHistory = const [];
   bool _visible = false;
+
+  /// 已完成入场动画的条目下标：HomeEntrance 只在首屏（index 0–5）播一次，
+  /// 滚动回看不重放（HomeEntrance 的 animate 开关约定）。
+  final Set<int> _entered = {};
   late final Listenable _historyChanges;
   late final Listenable _readTimeChanges;
   late final ValueListenable<int> _shelfChanges;
@@ -120,11 +141,18 @@ class _LibraryPageState extends State<LibraryPage> {
       _browseHistory = [
         for (final entry in history) _ShelfEntry.fromHistory(entry),
       ];
+      // 选中集合随数据回真：条目在别处被移出 / 删除后，它的键不该继续占着
+      // 「已选择 N 本」，也不该把全选判定带偏。
+      final available = {
+        for (final entry in _tab == 0 ? _shelf : _browseHistory)
+          entry.selectionKey,
+      };
+      _selected.removeWhere((key) => !available.contains(key));
       _todayMinutes = _todayReadMinutes();
     });
   }
 
-  /// 官方排序：最近阅读优先，没有阅读记录的按加入时间降序。
+  /// 书架条目（关联阅读历史取进度/时间），按 [_sortShelf] 的固定排序输出。
   List<_ShelfEntry> _shelfEntries(
     List<ShelfRecord> records,
     List<Map<String, dynamic>> history,
@@ -133,20 +161,26 @@ class _LibraryPageState extends State<LibraryPage> {
       for (final entry in history)
         '${entry['kind'] ?? 'book'}:${historyContentId(entry)}': entry,
     };
-    final entries = [
+    return [
       for (final record in records)
         _ShelfEntry.fromRecord(
           record,
           byIdentity['${record.item.kind}:${record.item.seriesId ?? record.item.id}'],
         ),
     ];
-    entries.sort((a, b) {
+  }
+
+  /// 书架固定按「最近阅读优先」排：有阅读记录的按时间倒序，没有的按加入
+  /// 时间倒序（2026-10-13 删掉排序入口后退回的唯一排序，即重设计前的行为）。
+  List<_ShelfEntry> _sortShelf(List<_ShelfEntry> entries) {
+    final sorted = [...entries];
+    sorted.sort((a, b) {
       final left = a.readTime ?? 0;
       final right = b.readTime ?? 0;
       if (left != right) return right.compareTo(left);
       return b.addedAt.compareTo(a.addedAt);
     });
-    return entries;
+    return sorted;
   }
 
   int _todayReadMinutes() {
@@ -205,14 +239,18 @@ class _LibraryPageState extends State<LibraryPage> {
       // 编辑态与选中集合属于当前 tab，切 tab 时回到浏览态。
       _editing = false;
       _selected.clear();
-      _filterOpen = false;
+      _entered.clear();
     });
   }
 
   Future<void> _setLayout(BookshelfLayout layout) async {
     if (layout == _layout) return;
     final generation = ++_layoutGeneration;
-    setState(() => _layout = layout);
+    setState(() {
+      _layout = layout;
+      // 版式切换后入场动画重播一次（新视图首屏），滚动回看仍不重放。
+      _entered.clear();
+    });
     try {
       final preferences = await SharedPreferences.getInstance();
       if (!await preferences.setInt(_bookshelfLayoutPreference, layout.index)) {
@@ -233,6 +271,10 @@ class _LibraryPageState extends State<LibraryPage> {
       _setLayout(layout);
       return;
     }
+    if (action == _MenuAction.importBook) {
+      _importLocalBook();
+      return;
+    }
     if (action == _MenuAction.clearHistory) {
       _confirmClear();
     } else {
@@ -240,6 +282,30 @@ class _LibraryPageState extends State<LibraryPage> {
         context,
         MaterialPageRoute(builder: (_) => const CachedBooksPage()),
       );
+    }
+  }
+
+  Future<void> _importLocalBook() async {
+    if (_importingBook) return;
+    setState(() => _importingBook = true);
+    try {
+      final book = await ImportedBookStore.instance.pickAndImport();
+      if (book == null || !mounted) return;
+      await ShelfStore.instance.add(book.toMediaItem());
+      if (!mounted) return;
+      _load();
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('已导入《${book.title}》')));
+    } catch (e) {
+      if (mounted) {
+        final message = e is FormatException ? e.message : '请重试';
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('导入失败：$message')));
+      }
+    } finally {
+      if (mounted) setState(() => _importingBook = false);
     }
   }
 
@@ -256,11 +322,57 @@ class _LibraryPageState extends State<LibraryPage> {
   /// 那个要联网取目录的页面。这里只在「无网 + 有缓存」时抄这条捷径：联网时
   /// 仍走详情页，段评、章节目录预览这些联网能力不会被悄悄降级。
   Future<void> _open(MediaItem item) async {
+    if (ImportedBookStore.isLocalBookId(item.id)) {
+      await _openLocalBook(item);
+      return;
+    }
     if (await _openCached(item)) return;
     if (!mounted) return;
     Navigator.push(
       context,
       MaterialPageRoute(builder: (_) => DetailPage(item: item)),
+    );
+  }
+
+  Future<void> _openLocalBook(MediaItem item) async {
+    final store = ImportedBookStore.instance;
+    final book = await store.book(item.id);
+    if (!mounted) return;
+    if (book == null || book.chapters.isEmpty) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('本地书籍文件不可用')));
+      return;
+    }
+    final readerStore = widget.readerStore ?? LibraryStore.instance;
+    Map<String, dynamic>? saved;
+    try {
+      saved = await ReaderHistory(readerStore).load(book.id);
+    } catch (_) {}
+    if (!mounted) return;
+    var startIndex = book.chapters.indexWhere(
+      (chapter) => chapter.itemId == saved?['chapterId']?.toString(),
+    );
+    if (startIndex < 0) {
+      final episode = num.tryParse(saved?['episode']?.toString() ?? '');
+      startIndex = episode != null && episode.isFinite
+          ? episode.toInt().clamp(0, book.chapters.length - 1).toInt()
+          : 0;
+    }
+    await Navigator.push<void>(
+      context,
+      MaterialPageRoute<void>(
+        builder: (_) => ReaderPage(
+          bookId: book.id,
+          title: book.title,
+          chapters: book.chapters,
+          startIndex: startIndex,
+          localOnly: true,
+          readerStore: readerStore,
+          chapterLoader: (chapter) =>
+              store.chapterText(book.id, chapter.itemId),
+        ),
+      ),
     );
   }
 
@@ -287,16 +399,13 @@ class _LibraryPageState extends State<LibraryPage> {
     MaterialPageRoute<void>(builder: (_) => const CachedBooksPage()),
   );
 
-  List<_ShelfEntry> get _visibleEntries {
-    final entries = _tab == 0 ? _shelf : _browseHistory;
-    final kind = _kindFilter;
-    if (kind == null) return entries;
-    return [for (final entry in entries) if (entry.item.kind == kind) entry];
-  }
+  List<_ShelfEntry> get _visibleEntries =>
+      _tab == 0 ? _sortShelf(_shelf) : _browseHistory;
 
   bool get _allSelected {
     final entries = _visibleEntries;
-    return entries.isNotEmpty && _selected.length >= entries.length;
+    return entries.isNotEmpty &&
+        entries.every((entry) => _selected.contains(entry.selectionKey));
   }
 
   void _toggleSelected(_ShelfEntry entry) {
@@ -309,13 +418,14 @@ class _LibraryPageState extends State<LibraryPage> {
 
   void _toggleSelectAll() {
     final entries = _visibleEntries;
+    final keys = [for (final entry in entries) entry.selectionKey];
+    final allSelected = _allSelected;
     setState(() {
-      if (_allSelected) {
-        _selected.clear();
+      // 取消只作用于当前可见条目：筛选态下不悄悄清掉看不见的选择。
+      if (allSelected) {
+        _selected.removeAll(keys);
       } else {
-        _selected
-          ..clear()
-          ..addAll(entries.map((entry) => entry.selectionKey));
+        _selected.addAll(keys);
       }
     });
   }
@@ -323,7 +433,6 @@ class _LibraryPageState extends State<LibraryPage> {
   void _enterEdit([_ShelfEntry? entry]) {
     setState(() {
       _editing = true;
-      _filterOpen = false;
       if (entry != null) _selected.add(entry.selectionKey);
     });
   }
@@ -335,38 +444,38 @@ class _LibraryPageState extends State<LibraryPage> {
     });
   }
 
+  /// 非编辑态长按条目：触感反馈后进编辑态并选中该项。
+  void _longPress(_ShelfEntry entry) {
+    HapticFeedback.mediumImpact();
+    _enterEdit(entry);
+  }
+
   /// 书架 tab 的「移出书架」：只把条目移出本地收藏库，阅读历史保留。
+  ///
+  /// 决策：可逆操作勿扰——移出书架有 4s 撤销窗口，直接执行，不再弹确认
+  /// 对话框（原对话框的「阅读记录会保留」说明挪进 SnackBar 语义里）。
   Future<void> _removeFromShelf() async {
     final selected = [
       for (final entry in _shelf)
         if (_selected.contains(entry.selectionKey)) entry,
     ];
     if (selected.isEmpty) return;
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('移出书架'),
-        content: Text('确定把选中的 ${selected.length} 本移出书架吗？阅读记录会保留。'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('取消'),
-          ),
-          FilledButton.tonal(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('移出'),
-          ),
-        ],
-      ),
-    );
-    if (confirmed != true || !mounted) return;
-    // The list is updated before the write lands. The user just confirmed the
-    // removal, and leaving the selection on screen until the disk round trip
-    // finishes reads as a dead button.
-    final keys = [
-      for (final entry in selected) ShelfStore.keyOf(entry.item),
+    // 撤销要按原 addedAt 恢复：移出前把 ShelfRecord 快照留在闭包里。
+    final records = [
+      for (final entry in selected)
+        ShelfRecord(
+          item: entry.item,
+          addedAt: DateTime.fromMillisecondsSinceEpoch(entry.addedAt),
+        ),
+    ];
+    final keys = [for (final entry in selected) ShelfStore.keyOf(entry.item)];
+    final localBooks = [
+      for (final entry in selected)
+        if (ImportedBookStore.isLocalBookId(entry.item.id)) entry.item.id,
     ];
     final removed = {for (final entry in selected) entry.selectionKey};
+    // The list is updated before the write lands: leaving the selection on
+    // screen until the disk round trip finishes reads as a dead button.
     _exitEdit();
     setState(() {
       _shelf = [
@@ -376,6 +485,11 @@ class _LibraryPageState extends State<LibraryPage> {
     });
     try {
       await ShelfStore.instance.removeKeys(keys);
+      for (final id in localBooks) {
+        try {
+          await ImportedBookStore.instance.deleteBook(id);
+        } catch (_) {}
+      }
     } catch (_) {
       if (mounted) {
         ScaffoldMessenger.of(
@@ -384,22 +498,53 @@ class _LibraryPageState extends State<LibraryPage> {
         // A failed write means the optimistic list was wrong: reload it.
         _load();
       }
+      return;
+    }
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('已移出 ${selected.length} 本，阅读记录会保留'),
+        duration: const Duration(seconds: 4),
+        action: SnackBarAction(
+          key: const Key('shelf-undo-button'),
+          label: '撤销',
+          onPressed: () => _undoRemove(records),
+        ),
+      ),
+    );
+  }
+
+  /// 撤销移出：按原 addedAt 写回。仅内存级——进程死亡即失效（SnackBar 已
+  /// 过期），诚实不做伪恢复。
+  Future<void> _undoRemove(List<ShelfRecord> records) async {
+    try {
+      await ShelfStore.instance.restoreAll(records);
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('撤销失败，请重新添加')));
+        // 恢复失败意味着乐观列表可能与磁盘不一致：回真。
+        _load();
+      }
     }
   }
 
-  /// 浏览历史 tab 的「删除」。
+  /// 浏览历史 tab 的「删除」：按选中条目单条删除
+  /// （[LibraryStore.removeHistoryEntries]，短剧页已在用的同一 API）。
   ///
-  /// LibraryStore 只有整表清空（clearHistory / clearReadingData），没有单条
-  /// 历史删除 API，所以这里只能清空全部；对话框如实说明，不假装选中项被单独
-  /// 移除。
+  /// 决策：不可逆操作必拦——历史删除没有撤销窗口，保留确认对话框。
   Future<void> _deleteHistory() async {
-    final entries = _browseHistory;
-    if (entries.isEmpty) return;
+    final selected = [
+      for (final entry in _browseHistory)
+        if (_selected.contains(entry.selectionKey)) entry,
+    ];
+    if (selected.isEmpty) return;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('删除历史记录'),
-        content: Text('本地阅读历史不支持单条删除，将清空全部 ${entries.length} 条记录。'),
+        content: Text('确定删除选中的 ${selected.length} 条记录吗？此操作无法撤销。'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
@@ -407,28 +552,40 @@ class _LibraryPageState extends State<LibraryPage> {
           ),
           FilledButton.tonal(
             onPressed: () => Navigator.pop(context, true),
-            child: const Text('清空'),
+            style: FilledButton.styleFrom(
+              foregroundColor: ShelfTokens.deleteRed,
+            ),
+            child: const Text('删除'),
           ),
         ],
       ),
     );
     if (confirmed != true || !mounted) return;
-    // Same optimistic update as 移出书架: the list empties on screen now, and a
-    // failed clear reloads the snapshot instead of leaving a lie behind.
+    final targets = [
+      for (final entry in selected)
+        (contentId: entry.contentId, kind: entry.item.kind),
+    ];
+    final removed = {for (final entry in selected) entry.selectionKey};
+    // Same optimistic update as 移出书架: the rows leave the screen now, and a
+    // failed write reloads the snapshot instead of leaving a lie behind.
     _exitEdit();
-    setState(() => _browseHistory = const []);
+    setState(() {
+      _browseHistory = [
+        for (final entry in _browseHistory)
+          if (!removed.contains(entry.selectionKey)) entry,
+      ];
+    });
     try {
-      await LibraryStore.instance.clearHistory();
+      await LibraryStore.instance.removeHistoryEntries(targets);
     } catch (_) {
       if (mounted) {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(const SnackBar(content: Text('清空失败，请重试')));
+        ).showSnackBar(const SnackBar(content: Text('删除失败，请重试')));
         _load();
       }
     }
   }
-
 
   Future<void> _confirmClear() async {
     final confirmed = await showDialog<bool>(
@@ -467,28 +624,51 @@ class _LibraryPageState extends State<LibraryPage> {
   @override
   Widget build(BuildContext context) {
     final palette = HomePalette.of(context);
-    return Scaffold(
-      backgroundColor: palette.canvas,
-      body: SafeArea(
-        bottom: false,
-        child: Column(
-          children: [
-            if (_editing) _editBar(palette) else _tabRow(palette),
-            if (!_editing && _tab == 0) _shelfHeader(palette),
-            if (!_editing && _tab == 1) _historyHeader(palette),
-            if (!_editing && _tab == 0 && _filterOpen) _filterPanel(),
-            Expanded(child: _content(palette)),
-          ],
+    return PopScope<Object?>(
+      // 编辑态拦下系统返回 / 侧滑：先退出编辑态，而不是把整页 pop 掉。
+      // 书架页是 RootShell 里 LazyIndexedStack 的一个 child、不是独立路由，
+      // 不拦的话返回事件会一路冒泡到根路由 —— 表现就是「侧滑直接退出应用」。
+      canPop: !_editing,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop && _editing) _exitEdit();
+      },
+      child: Scaffold(
+        backgroundColor: palette.canvas,
+        body: SafeArea(
+          bottom: false,
+          child: Column(
+            children: [
+              // L1 标题栏：编辑态与浏览态淡切。
+              AnimatedSwitcher(
+                duration: _motionDuration(context, 200),
+                child: _editing
+                    ? KeyedSubtree(
+                        key: const ValueKey('library-edit-bar'),
+                        child: _editBar(palette),
+                      )
+                    : KeyedSubtree(
+                        key: const ValueKey('library-tab-row'),
+                        child: _tabRow(palette),
+                      ),
+              ),
+              if (!_editing && _tab == 0) _toolbar(palette),
+              Expanded(child: _content(palette)),
+            ],
+          ),
         ),
+        bottomNavigationBar: _editing ? _editBottomBar(palette) : null,
       ),
-      bottomNavigationBar: _editing ? _editBottomBar(palette) : null,
     );
   }
 
-  /// 顶部一级 tab（选中 20sp / 未选中 16sp，指示条 34dp）+ 右侧两个 24dp 图标。
+  /// 顶部一级 tab（选中 18sp w600，指示条宽度动画）+ 右侧搜索 / 更多。
   Widget _tabRow(HomePalette palette) {
     return Padding(
-      padding: const EdgeInsets.only(top: 12, bottom: 7, left: 16),
+      padding: const EdgeInsets.only(
+        top: ShelfTokens.spaceM,
+        bottom: 7,
+        left: ShelfTokens.screenPadding,
+      ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.end,
         children: [
@@ -536,24 +716,42 @@ class _LibraryPageState extends State<LibraryPage> {
                       : action == _MenuAction.clearHistory
                       ? _browseHistory.isNotEmpty
                       : true,
-                  child: Text(
-                    action.label,
-                    style: TextStyle(
-                      fontSize: 14,
-                      fontWeight: action.layout == _layout
-                          ? FontWeight.w400
-                          : FontWeight.w500,
-                      color: action.layout == _layout
-                          ? palette.muted
-                          : action == _MenuAction.clearHistory
-                          ? _deleteRed
-                          : palette.ink,
-                    ),
+                  child: Row(
+                    children: [
+                      Icon(
+                        action.icon,
+                        size: 16,
+                        color: action.layout == _layout
+                            ? palette.muted
+                            : action == _MenuAction.clearHistory
+                            ? ShelfTokens.deleteRed
+                            : palette.ink,
+                      ),
+                      const SizedBox(width: 10),
+                      Text(
+                        action.label,
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: action.layout == _layout
+                              ? FontWeight.w400
+                              : FontWeight.w500,
+                          color: action.layout == _layout
+                              ? palette.muted
+                              : action == _MenuAction.clearHistory
+                              ? ShelfTokens.deleteRed
+                              : palette.ink,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
             ],
             child: Padding(
-              padding: const EdgeInsets.only(right: 16, left: 6, bottom: 2),
+              padding: const EdgeInsets.only(
+                right: ShelfTokens.screenPadding,
+                left: 6,
+                bottom: 2,
+              ),
               child: Icon(LucideIcons.ellipsis, size: 22, color: palette.ink),
             ),
           ),
@@ -562,28 +760,41 @@ class _LibraryPageState extends State<LibraryPage> {
     );
   }
 
-  /// 书架 tab 页头（cql.xml）：左侧今日已读，右侧 筛选 / 编辑。
-  Widget _shelfHeader(HomePalette palette) {
+  /// L2 工具栏（书架 tab）：左今日已读胶囊，右版式分段控件。
+  ///
+  /// 2026-10-13 按用户要求删掉排序 / 筛选 / 编辑三个入口：排序退回固定「最近
+  /// 阅读优先」，类型筛选整个移除，编辑改由卡片长按进入（见 `_longPress`）。
+  /// 页头因此少一行；只剩两个控件，[Row] 即可放下，无需再折行。
+  Widget _toolbar(HomePalette palette) {
     return Padding(
-      padding: const EdgeInsets.only(top: 4, bottom: 8, left: 16, right: 16),
+      padding: const EdgeInsets.only(
+        top: ShelfTokens.spaceXS,
+        bottom: ShelfTokens.spaceS,
+        left: ShelfTokens.screenPadding,
+        right: ShelfTokens.screenPadding,
+      ),
       child: Row(
         children: [
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
             decoration: BoxDecoration(
               color: palette.soft,
-              borderRadius: BorderRadius.circular(16),
+              borderRadius: BorderRadius.circular(ShelfTokens.radiusChip),
               border: Border.all(color: palette.line, width: 0.5),
             ),
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(LucideIcons.clock, size: 13, color: palette.muted),
+                Icon(
+                  LucideIcons.clock,
+                  size: ShelfTokens.iconInline,
+                  color: palette.muted,
+                ),
                 const SizedBox(width: 5),
                 Text(
                   '今日已读$_todayMinutes分钟',
                   style: TextStyle(
-                    fontSize: 12,
+                    fontSize: ShelfTokens.subtitle,
                     fontWeight: FontWeight.w500,
                     color: palette.ink,
                   ),
@@ -592,91 +803,180 @@ class _LibraryPageState extends State<LibraryPage> {
             ),
           ),
           const Spacer(),
-          _HeaderButton(
-            key: const Key('shelf-filter-button'),
-            label: '筛选',
-            icon: LucideIcons.sliders_horizontal,
-            active: _filterOpen || _kindFilter != null,
+          _LayoutSegments(
+            current: _layout,
             palette: palette,
-            onTap: () => setState(() => _filterOpen = !_filterOpen),
-          ),
-          const SizedBox(width: 8),
-          _HeaderButton(
-            key: const Key('shelf-edit-button'),
-            label: '编辑',
-            icon: LucideIcons.list_checks,
-            palette: palette,
-            onTap: _enterEdit,
+            onChanged: _setLayout,
           ),
         ],
       ),
     );
   }
 
-  /// 浏览历史 tab 只有编辑入口（官方该 tab 的数据只支持整表清空）。
-  Widget _historyHeader(HomePalette palette) {
-    return Padding(
-      padding: const EdgeInsets.only(top: 4, bottom: 8, right: 16),
-      child: Row(
-        children: [
-          const Spacer(),
-          _HeaderButton(
-            key: const Key('history-edit-button'),
-            label: '编辑',
-            icon: LucideIcons.list_checks,
-            palette: palette,
-            onTap: _enterEdit,
-          ),
-        ],
+  Widget _content(HomePalette palette) {
+    final entries = _visibleEntries;
+    if (entries.isEmpty) {
+      // 空态按 tab 区分：书架为空给「去书城找书 + 查看离线缓存」（筛选已
+      // 移除，故这已是书架 tab 唯一的空态）；浏览历史为空沿用官方通用文案。
+      return _tab == 0 && _shelf.isEmpty
+          ? ShelfEmptyState(
+              onBrowse: widget.onBrowse,
+              onCachedBooks: _openCachedBooks,
+            )
+          : const ShelfEmptyHint(text: '未找到相关内容');
+    }
+    final body = switch (_layout) {
+      BookshelfLayout.grid => _grid(entries),
+      BookshelfLayout.doubleColumn => _doubleGrid(entries),
+      BookshelfLayout.list => _list(entries),
+    };
+    // 版式切换：fade+scale 220ms（无障碍关闭动画时瞬时）。
+    return AnimatedSwitcher(
+      duration: _motionDuration(context, 220),
+      switchInCurve: Curves.easeOutCubic,
+      transitionBuilder: (child, animation) => FadeTransition(
+        opacity: animation,
+        child: ScaleTransition(
+          scale: Tween(begin: 0.96, end: 1.0).animate(animation),
+          child: child,
+        ),
+      ),
+      child: KeyedSubtree(
+        key: ValueKey('shelf-content-${_layout.name}'),
+        child: body,
       ),
     );
   }
 
-  /// 筛选面板：按内容类型过滤（官方 BSFilterPanelLayout 的本地可支撑子集）。
-  Widget _filterPanel() {
-    final palette = HomePalette.of(context);
-    final options = <(String, String?)>[
-      ('全部', null),
-      for (final kind in bookshelfFilterKinds) (bookshelfKindLabel(kind), kind),
-    ];
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-      child: Wrap(
-        spacing: 8,
-        runSpacing: 8,
-        children: [
-          for (final (label, kind) in options)
-            ChoiceChip(
-              key: Key('shelf-filter-${kind ?? 'all'}'),
-              label: Text(label),
-              selected: _kindFilter == kind,
-              selectedColor: HomePalette.accent.withValues(alpha: 0.15),
-              backgroundColor: palette.soft,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(20),
-                side: BorderSide(
-                  color: _kindFilter == kind ? HomePalette.accent : palette.line,
-                  width: _kindFilter == kind ? 1.0 : 0.5,
-                ),
-              ),
-              showCheckmark: false,
-              labelStyle: TextStyle(
-                fontSize: 12.5,
-                fontWeight: _kindFilter == kind ? FontWeight.w600 : FontWeight.w400,
-                color: _kindFilter == kind ? palette.accentText : palette.ink,
-              ),
-              onSelected: (_) => setState(() => _kindFilter = kind),
+  Widget _grid(List<_ShelfEntry> entries) {
+    return LayoutBuilder(
+      builder: (context, constraints) => GridView.builder(
+        key: const Key('shelf-grid-view'),
+        padding: const EdgeInsets.fromLTRB(
+          ShelfTokens.screenPadding,
+          ShelfTokens.spaceXS,
+          ShelfTokens.screenPadding,
+          ShelfTokens.contentBottomInset,
+        ),
+        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: ShelfTokens.gridColumns,
+          crossAxisSpacing: ShelfTokens.gridSpacing,
+          mainAxisSpacing: ShelfTokens.gridRunSpacing,
+          childAspectRatio: shelfGridChildAspectRatio(
+            context,
+            availableWidth: constraints.maxWidth,
+          ),
+        ),
+        itemCount: entries.length,
+        itemBuilder: (context, index) {
+          final entry = entries[index];
+          return HomeEntrance(
+            index: index,
+            animate: index < 6 && _entered.add(index),
+            child: BookshelfGridCard(
+              key: ValueKey('shelf-grid-${entry.selectionKey}'),
+              item: entry.item,
+              badgeText: entry.badgeText,
+              infoText: entry.infoText,
+              editing: _editing,
+              selected: _selected.contains(entry.selectionKey),
+              onTap: () => _tap(entry),
+              onLongPress: () => _longPress(entry),
             ),
-        ],
+          );
+        },
       ),
     );
+  }
+
+  Widget _doubleGrid(List<_ShelfEntry> entries) {
+    return LayoutBuilder(
+      builder: (context, constraints) => GridView.builder(
+        key: const Key('shelf-double-view'),
+        padding: const EdgeInsets.fromLTRB(
+          ShelfTokens.screenPadding,
+          ShelfTokens.spaceXS,
+          ShelfTokens.screenPadding,
+          ShelfTokens.contentBottomInset,
+        ),
+        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: 2,
+          crossAxisSpacing: ShelfTokens.gridSpacing,
+          mainAxisSpacing: ShelfTokens.gridSpacing,
+          childAspectRatio: shelfDoubleChildAspectRatio(
+            context,
+            availableWidth: constraints.maxWidth,
+          ),
+        ),
+        itemCount: entries.length,
+        itemBuilder: (context, index) {
+          final entry = entries[index];
+          return HomeEntrance(
+            index: index,
+            animate: index < 6 && _entered.add(index),
+            child: BookshelfDoubleCard(
+              key: ValueKey('shelf-double-${entry.selectionKey}'),
+              item: entry.item,
+              badgeText: entry.badgeText,
+              subtitleText: entry.subtitleText,
+              editing: _editing,
+              selected: _selected.contains(entry.selectionKey),
+              onTap: () => _tap(entry),
+              onLongPress: () => _longPress(entry),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _list(List<_ShelfEntry> entries) {
+    return ListView.separated(
+      key: const Key('shelf-list-view'),
+      padding: const EdgeInsets.only(
+        top: ShelfTokens.spaceXS,
+        bottom: ShelfTokens.contentBottomInset,
+      ),
+      itemCount: entries.length,
+      separatorBuilder: (context, index) => Divider(
+        height: 0.5,
+        thickness: 0.5,
+        color: HomePalette.of(context).line,
+      ),
+      itemBuilder: (context, index) {
+        final entry = entries[index];
+        return HomeEntrance(
+          index: index,
+          animate: index < 6 && _entered.add(index),
+          child: BookshelfListCard(
+            key: ValueKey('shelf-list-${entry.selectionKey}'),
+            item: entry.item,
+            progressText: entry.readingText,
+            metaText: entry.metaText,
+            progress: entry.progress,
+            editing: _editing,
+            selected: _selected.contains(entry.selectionKey),
+            onTap: () => _tap(entry),
+            onLongPress: () => _longPress(entry),
+          ),
+        );
+      },
+    );
+  }
+
+  void _tap(_ShelfEntry entry) {
+    if (_editing) {
+      _toggleSelected(entry);
+    } else {
+      _open(entry.item);
+    }
   }
 
   /// 编辑态顶部操作栏（by1.xml）：全选 / 已选择 N 本 / 完成。
   Widget _editBar(HomePalette palette) {
     return Container(
-      height: 52,
-      padding: const EdgeInsets.symmetric(horizontal: 8),
+      height: ShelfTokens.editBarHeight,
+      padding: const EdgeInsets.symmetric(horizontal: ShelfTokens.spaceS),
       decoration: BoxDecoration(
         color: palette.canvas,
         border: Border(bottom: BorderSide(color: palette.line, width: 0.5)),
@@ -688,9 +988,14 @@ class _LibraryPageState extends State<LibraryPage> {
             onPressed: _toggleSelectAll,
             style: TextButton.styleFrom(
               foregroundColor: palette.ink,
-              padding: const EdgeInsets.symmetric(horizontal: 12),
+              padding: const EdgeInsets.symmetric(
+                horizontal: ShelfTokens.spaceM,
+              ),
             ),
-            child: const Text('全选', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
+            child: const Text(
+              '全选',
+              style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+            ),
           ),
           Expanded(
             child: Center(
@@ -709,187 +1014,76 @@ class _LibraryPageState extends State<LibraryPage> {
             onPressed: _exitEdit,
             style: TextButton.styleFrom(
               foregroundColor: HomePalette.accent,
-              padding: const EdgeInsets.symmetric(horizontal: 16),
+              padding: const EdgeInsets.symmetric(
+                horizontal: ShelfTokens.spaceL,
+              ),
             ),
-            child: const Text('完成', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
+            child: const Text(
+              '完成',
+              style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+            ),
           ),
         ],
       ),
     );
   }
 
-  /// 编辑态底功能栏（amb.xml）：每个条目 28dp 图标 + 10sp 文案。
+  /// 编辑态底功能栏（amb.xml）：每个条目 24dp 图标 + 11sp 文案。
   ///
-  /// 官方底栏还有找相似书 / 移动至分组 / 分享为书单 / 加入桌面 / 云同步 / 导入
-  /// 图书 / 最近删除 / 连载更新提醒，这些本地都没有数据源，不伪造入口；有数据
-  /// 支撑的只有「移出书架」（书架 tab）与「删除」（浏览历史 tab）。
+  /// 官方底栏还有找相似书 / 移动至分组 / 分享为书单 / 加入桌面 / 云同步 /
+  /// 导入图书 / 最近删除 / 连载更新提醒，这些本地都没有数据源，不伪造入口；
+  /// 有数据支撑的只有「移出书架」（书架 tab，可撤销故直接执行）与「删除」
+  /// （浏览历史 tab，不可撤销故保留确认）。
   Widget _editBottomBar(HomePalette palette) {
     final removing = _tab == 0;
-    return RepaintBoundary(
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: palette.surface,
-          border: Border(top: BorderSide(color: palette.line, width: 0.6)),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: palette.dark ? 0.28 : 0.05),
-              blurRadius: 16,
-              offset: const Offset(0, -4),
-            ),
-          ],
-        ),
-        child: SafeArea(
-          top: false,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-            child: Row(
-              children: [
-                _BottomAction(
-                  key: Key(removing ? 'shelf-remove-action' : 'history-delete-action'),
-                  icon: removing
-                      ? LucideIcons.bookmark_x
-                      : LucideIcons.trash,
-                  label: removing ? '移出书架' : '删除',
-                  color: removing ? palette.ink : _deleteRed,
-                  onTap: _selected.isEmpty
-                      ? null
-                      : removing
-                      ? _removeFromShelf
-                      : _deleteHistory,
+    return _SlideUp(
+      child: RepaintBoundary(
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: palette.surface,
+            border: Border(top: BorderSide(color: palette.line, width: 0.6)),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(
+                  alpha: palette.dark ? 0.28 : 0.05,
                 ),
-                const Spacer(),
-              ],
+                blurRadius: 16,
+                offset: const Offset(0, -4),
+              ),
+            ],
+          ),
+          child: SafeArea(
+            top: false,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(
+                horizontal: ShelfTokens.spaceL,
+                vertical: ShelfTokens.spaceXS,
+              ),
+              child: Row(
+                children: [
+                  _BottomAction(
+                    key: Key(
+                      removing
+                          ? 'shelf-remove-action'
+                          : 'history-delete-action',
+                    ),
+                    icon: removing ? LucideIcons.bookmark_x : LucideIcons.trash,
+                    label: removing ? '移出书架' : '删除',
+                    color: removing ? palette.ink : ShelfTokens.deleteRed,
+                    onTap: _selected.isEmpty
+                        ? null
+                        : removing
+                        ? _removeFromShelf
+                        : _deleteHistory,
+                  ),
+                  const Spacer(),
+                ],
+              ),
             ),
           ),
         ),
       ),
     );
-  }
-
-  Widget _content(HomePalette palette) {
-    final entries = _visibleEntries;
-    if (entries.isEmpty) {
-      return _tab == 0 && _shelf.isEmpty
-          ? _EmptyShelf(
-              onBrowse: widget.onBrowse,
-              onCachedBooks: _openCachedBooks,
-            )
-          : const _EmptyHint(text: '未找到相关内容');
-    }
-    return switch (_layout) {
-      BookshelfLayout.grid => _grid(entries),
-      BookshelfLayout.doubleColumn => _doubleGrid(entries),
-      BookshelfLayout.list => _list(entries),
-    };
-  }
-
-  Widget _grid(List<_ShelfEntry> entries) {
-    return LayoutBuilder(
-      builder: (context, constraints) => GridView.builder(
-        key: const Key('shelf-grid-view'),
-        padding: const EdgeInsets.fromLTRB(
-          bookshelfGridSidePadding,
-          4,
-          bookshelfGridSidePadding,
-          88,
-        ),
-        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-          crossAxisCount: bookshelfGridColumns,
-          crossAxisSpacing: bookshelfGridSpacing,
-          mainAxisSpacing: bookshelfGridRunSpacing,
-          childAspectRatio: bookshelfGridChildAspectRatio(
-            context,
-            availableWidth: constraints.maxWidth,
-          ),
-        ),
-        itemCount: entries.length,
-        itemBuilder: (context, index) {
-          final entry = entries[index];
-          return BookshelfGridCard(
-            key: ValueKey('shelf-grid-${entry.selectionKey}'),
-            item: entry.item,
-            badgeText: entry.badgeText,
-            infoText: entry.infoText,
-            editing: _editing,
-            selected: _selected.contains(entry.selectionKey),
-            onTap: () => _tap(entry),
-            onLongPress: () => _enterEdit(entry),
-          );
-        },
-      ),
-    );
-  }
-
-  Widget _doubleGrid(List<_ShelfEntry> entries) {
-    return LayoutBuilder(
-      builder: (context, constraints) => GridView.builder(
-        key: const Key('shelf-double-view'),
-        padding: const EdgeInsets.fromLTRB(
-          bookshelfDoubleSidePadding,
-          4,
-          bookshelfDoubleSidePadding,
-          88,
-        ),
-        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-          crossAxisCount: 2,
-          crossAxisSpacing: bookshelfDoubleSpacing,
-          mainAxisSpacing: bookshelfDoubleRunSpacing,
-          childAspectRatio: bookshelfDoubleChildAspectRatio(
-            context,
-            availableWidth: constraints.maxWidth,
-          ),
-        ),
-        itemCount: entries.length,
-        itemBuilder: (context, index) {
-          final entry = entries[index];
-          return BookshelfDoubleCard(
-            key: ValueKey('shelf-double-${entry.selectionKey}'),
-            item: entry.item,
-            badgeText: entry.badgeText,
-            subtitleText: entry.subtitleText,
-            infoLines: entry.infoLines,
-            editing: _editing,
-            selected: _selected.contains(entry.selectionKey),
-            onTap: () => _tap(entry),
-            onLongPress: () => _enterEdit(entry),
-          );
-        },
-      ),
-    );
-  }
-
-  Widget _list(List<_ShelfEntry> entries) {
-    return ListView.separated(
-      key: const Key('shelf-list-view'),
-      padding: const EdgeInsets.only(top: 4, bottom: 88),
-      itemCount: entries.length,
-      separatorBuilder: (context, index) => Divider(
-        height: 0.5,
-        thickness: 0.5,
-        color: HomePalette.of(context).line,
-      ),
-      itemBuilder: (context, index) {
-        final entry = entries[index];
-        return BookshelfListCard(
-          key: ValueKey('shelf-list-${entry.selectionKey}'),
-          item: entry.item,
-          progressText: entry.readingText,
-          metaText: entry.metaText,
-          editing: _editing,
-          selected: _selected.contains(entry.selectionKey),
-          onTap: () => _tap(entry),
-          onLongPress: () => _enterEdit(entry),
-        );
-      },
-    );
-  }
-
-  void _tap(_ShelfEntry entry) {
-    if (_editing) {
-      _toggleSelected(entry);
-    } else {
-      _open(entry.item);
-    }
   }
 }
 
@@ -899,6 +1093,11 @@ class _ShelfEntry {
   /// Stable identity of the row: `kind:contentId`, i.e. the same key the shelf
   /// box and the history dedupe use.
   final String selectionKey;
+
+  /// 历史 / 删除 API 用的内容标识（`kind:contentId` 的 contentId 部分）：
+  /// 历史条目取存储记录的 `contentId ?? id`（与 LibraryStore 的
+  /// _historyIdentity 一致），书架条目取 `seriesId ?? id`。
+  final String contentId;
 
   /// Last read time in milliseconds; null when the work has no history yet.
   final int? readTime;
@@ -911,6 +1110,7 @@ class _ShelfEntry {
   const _ShelfEntry({
     required this.item,
     required this.selectionKey,
+    required this.contentId,
     required this.addedAt,
     this.readTime,
     this.progress,
@@ -924,6 +1124,7 @@ class _ShelfEntry {
     item: record.item,
     selectionKey:
         '${record.item.kind}:${record.item.seriesId ?? record.item.id}',
+    contentId: record.item.seriesId ?? record.item.id,
     addedAt: record.addedAt.millisecondsSinceEpoch,
     readTime: _timeOf(history),
     progress: _progressOf(history),
@@ -942,9 +1143,11 @@ class _ShelfEntry {
       seriesId: history['seriesId']?.toString(),
       episodeId: history['episodeId']?.toString(),
     );
+    final contentId = historyContentId(history);
     return _ShelfEntry(
       item: item,
-      selectionKey: '${item.kind}:${item.seriesId ?? item.id}',
+      selectionKey: '${item.kind}:$contentId',
+      contentId: contentId,
       addedAt: 0,
       readTime: _timeOf(history),
       progress: _progressOf(history),
@@ -978,136 +1181,53 @@ class _ShelfEntry {
     return bookshelfKindLabel(item.kind);
   }
 
-  String? get infoText => readingText ?? _relativeTime(readTime) ?? bookshelfKindLabel(item.kind);
+  String? get infoText =>
+      readingText ?? _relativeTime(readTime) ?? bookshelfKindLabel(item.kind);
 
-  String? get subtitleText =>
-      item.author.trim().isEmpty ? bookshelfKindLabel(item.kind) : item.author.trim();
-
-  /// 双列的 简介 槽位（官方 12sp maxLines 4）。模型没有简介字段，这里放真实
-  /// 的副信息，而不是编一段文案。
-  List<String> get infoLines => [
-    ?readingText,
-    if (item.author.trim().isNotEmpty) item.author.trim(),
-    if (item.ep.trim().isNotEmpty)
-      '共 ${item.ep}${switch (item.kind) {
-        'video' || 'manju' || 'audio' => '集',
-        'manga' => '话',
-        _ => '章',
-      }}',
-  ];
+  String? get subtitleText => item.author.trim().isEmpty
+      ? bookshelfKindLabel(item.kind)
+      : item.author.trim();
 }
 
-/// 空书架（官方文案）：书架暂无书籍 + 去书城找书。
-///
-/// [onCachedBooks] 非空时多给一条「查看离线缓存」：书架空、又断网时
-/// 「去书城找书」是条死路，而用户手里可能正好有下载好的内容。
-class _EmptyShelf extends StatelessWidget {
-  final VoidCallback? onBrowse;
-  final VoidCallback? onCachedBooks;
+/// 编辑态底栏的上滑入场：AnimatedSlide + AnimatedOpacity，首帧隐藏、
+/// 下一帧滑入（无障碍关闭动画时直接呈现）。
+class _SlideUp extends StatefulWidget {
+  final Widget child;
 
-  const _EmptyShelf({this.onBrowse, this.onCachedBooks});
+  const _SlideUp({required this.child});
+
+  @override
+  State<_SlideUp> createState() => _SlideUpState();
+}
+
+class _SlideUpState extends State<_SlideUp> {
+  bool _shown = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) setState(() => _shown = true);
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
-    final palette = HomePalette.of(context);
-    return Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(
-            padding: const EdgeInsets.all(20),
-            decoration: BoxDecoration(
-              color: palette.soft,
-              shape: BoxShape.circle,
-            ),
-            child: Icon(
-              LucideIcons.book_open,
-              size: 48,
-              color: palette.muted.withValues(alpha: 0.65),
-            ),
-          ),
-          const SizedBox(height: 18),
-          Text(
-            '书架暂无书籍',
-            style: TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.w600,
-              color: palette.ink,
-            ),
-          ),
-          const SizedBox(height: 6),
-          Text(
-            '去书城发现海量故事，随时随地畅读',
-            style: TextStyle(fontSize: 13, color: palette.muted),
-          ),
-          const SizedBox(height: 20),
-          FilledButton.icon(
-            key: const Key('shelf-browse-button'),
-            onPressed: onBrowse,
-            icon: const Icon(LucideIcons.compass, size: 16),
-            label: const Text('去书城找书'),
-            style: FilledButton.styleFrom(
-              backgroundColor: HomePalette.accent,
-              foregroundColor: Colors.white,
-              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(24),
-              ),
-            ),
-          ),
-
-          if (onCachedBooks != null) ...[
-            const SizedBox(height: 10),
-            TextButton.icon(
-              key: const Key('shelf-cached-books-button'),
-              onPressed: onCachedBooks,
-              style: TextButton.styleFrom(foregroundColor: palette.muted),
-              icon: const Icon(LucideIcons.download, size: 16),
-              label: const Text('查看离线缓存'),
-            ),
-          ],
-        ],
+    final disabled = MediaQuery.disableAnimationsOf(context);
+    return AnimatedSlide(
+      offset: _shown || disabled ? Offset.zero : const Offset(0, 1),
+      duration: disabled ? Duration.zero : const Duration(milliseconds: 260),
+      curve: Curves.easeOutCubic,
+      child: AnimatedOpacity(
+        opacity: _shown || disabled ? 1 : 0,
+        duration: disabled ? Duration.zero : const Duration(milliseconds: 260),
+        child: widget.child,
       ),
     );
   }
 }
 
-/// 官方通用空态文案（RecyclerBookLayoutV2）。
-class _EmptyHint extends StatelessWidget {
-  final String text;
-
-  const _EmptyHint({required this.text});
-
-  @override
-  Widget build(BuildContext context) {
-    final palette = HomePalette.of(context);
-    return Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: palette.soft,
-              shape: BoxShape.circle,
-            ),
-            child: Icon(
-              LucideIcons.search_x,
-              size: 36,
-              color: palette.muted.withValues(alpha: 0.6),
-            ),
-          ),
-          const SizedBox(height: 14),
-          Text(
-            text,
-            style: TextStyle(fontSize: 14, color: palette.muted),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
+/// 一级 tab：选中 18sp w600，指示条宽度动画（AnimatedContainer）。
 class _TabButton extends StatelessWidget {
   final String label;
   final bool selected;
@@ -1138,16 +1258,18 @@ class _TabButton extends StatelessWidget {
               Text(
                 label,
                 style: TextStyle(
-                  fontSize: selected ? 20 : 16,
-                  fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                  fontSize: selected ? 18 : 15,
+                  fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
                   letterSpacing: -0.3,
                   color: selected ? palette.ink : palette.muted,
                 ),
               ),
               const SizedBox(height: 5),
-              // 指示条 34dp；未选中时占位保持行高一致。
-              Container(
-                width: 34,
+              // 指示条宽度动画；高度恒定保持行高一致。
+              AnimatedContainer(
+                duration: _motionDuration(context, 220),
+                curve: Curves.easeOutCubic,
+                width: selected ? 26 : 0,
                 height: 3,
                 decoration: BoxDecoration(
                   color: selected ? HomePalette.accent : Colors.transparent,
@@ -1193,61 +1315,57 @@ class _IconAction extends StatelessWidget {
   }
 }
 
-/// 页头文本按钮：支持图标与微药丸高质感样式。
-class _HeaderButton extends StatelessWidget {
-  final String label;
-  final IconData? icon;
-  final bool active;
+/// L2 版式分段控件：宫格 / 双列 / 列表三个图标按钮，与更多菜单同 handler。
+class _LayoutSegments extends StatelessWidget {
+  final BookshelfLayout current;
   final HomePalette palette;
-  final VoidCallback onTap;
+  final ValueChanged<BookshelfLayout> onChanged;
 
-  const _HeaderButton({
-    super.key,
-    required this.label,
-    this.icon,
-    this.active = false,
+  const _LayoutSegments({
+    required this.current,
     required this.palette,
-    required this.onTap,
+    required this.onChanged,
   });
 
   @override
   Widget build(BuildContext context) {
-    return TextButton(
-      onPressed: onTap,
-      style: TextButton.styleFrom(
-        foregroundColor: active ? HomePalette.accent : palette.ink,
-        backgroundColor: active
-            ? HomePalette.accent.withValues(alpha: 0.12)
-            : palette.soft,
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-        minimumSize: Size.zero,
-        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(16),
-          side: BorderSide(
-            color: active ? HomePalette.accent : palette.line,
-            width: 0.6,
-          ),
-        ),
+    return Container(
+      padding: const EdgeInsets.all(3),
+      decoration: BoxDecoration(
+        color: palette.soft,
+        borderRadius: BorderRadius.circular(ShelfTokens.radiusButton),
+        border: Border.all(color: palette.line, width: 0.5),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          if (icon != null) ...[
-            Icon(
-              icon,
-              size: 13,
-              color: active ? HomePalette.accent : palette.muted,
+          for (final layout in BookshelfLayout.values)
+            Tooltip(
+              message: layout.menuLabel,
+              child: InkWell(
+                key: Key('shelf-layout-${layout.segmentKey}'),
+                onTap: () => onChanged(layout),
+                borderRadius: BorderRadius.circular(9),
+                child: Container(
+                  width: 34,
+                  height: 30,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: layout == current
+                        ? HomePalette.accent.withValues(alpha: 0.15)
+                        : Colors.transparent,
+                    borderRadius: BorderRadius.circular(9),
+                  ),
+                  child: Icon(
+                    layout.menuIcon,
+                    size: 17,
+                    color: layout == current
+                        ? HomePalette.accent
+                        : palette.muted,
+                  ),
+                ),
+              ),
             ),
-            const SizedBox(width: 4),
-          ],
-          Text(
-            label,
-            style: TextStyle(
-              fontSize: 12.5,
-              fontWeight: active ? FontWeight.w600 : FontWeight.w400,
-            ),
-          ),
         ],
       ),
     );
@@ -1275,7 +1393,7 @@ class _BottomAction extends StatelessWidget {
     final fg = enabled ? color : color.withValues(alpha: 0.35);
     return InkWell(
       onTap: onTap,
-      borderRadius: BorderRadius.circular(12),
+      borderRadius: BorderRadius.circular(ShelfTokens.radiusButton),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
         child: Column(

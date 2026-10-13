@@ -118,6 +118,22 @@ class ShelfStore {
     _revision.value++;
   }
 
+  /// 撤销「移出书架」：把记录按**原 addedAt** 写回（`_recordOf` 含 addedAt
+  /// 字段，schema 不变）。页面在移出前把选中的 [ShelfRecord] 暂存在内存
+  /// 闭包里，SnackBar 撤销时调这里恢复。
+  ///
+  /// 仅内存级：进程死亡即失效，诚实不做伪恢复。
+  Future<void> restoreAll(Iterable<ShelfRecord> records) async {
+    final box = _openBox;
+    if (box == null) return;
+    var wrote = false;
+    for (final record in records) {
+      await box.put(keyOf(record.item), _recordOf(record.item, record.addedAt));
+      wrote = true;
+    }
+    if (wrote) _revision.value++;
+  }
+
   Future<void> clear() async {
     final box = _openBox;
     if (box == null) return;
