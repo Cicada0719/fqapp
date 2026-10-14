@@ -26,7 +26,11 @@ enum PlaybackIssue {
     if (error is TimeoutException) return timeout;
     if (error is NativePlaybackException) {
       final status = error.httpStatusCode;
-      if (status != null) return _fromHttpStatus(status);
+      // The native crypto reader also reports successful 200/206 responses.
+      // Those describe the last transfer, not the cause of a decoder failure.
+      if (status != null && status >= 400 && status <= 599) {
+        return _fromHttpStatus(status);
+      }
       // Media3 PlaybackException codes, retained by the native event bridge.
       return switch (error.errorCode ?? 0) {
         2001 => network, // IO_NETWORK_CONNECTION_FAILED

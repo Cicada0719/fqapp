@@ -3265,9 +3265,8 @@ class _InlineVideoLayer extends StatelessWidget {
   }
 }
 
-/// The card's failure state: the cover stays, official `d62.xml` copy is
-/// shown (`@string/f0g` + `@string/b43` 76×28dp) and the retry button
-/// re-activates this card's drama.
+/// The card keeps its cover and shows the session's curated error message.
+/// The retry button re-activates this card's drama.
 class _InlineVideoError extends StatelessWidget {
   final MediaItem item;
   final InlineVideoPlayback playback;
@@ -3296,10 +3295,10 @@ class _InlineVideoError extends StatelessWidget {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Text(
-                    '网络异常，请稍后再试',
+                  Text(
+                    detail,
                     textAlign: TextAlign.center,
-                    style: TextStyle(fontSize: 14, color: Colors.white),
+                    style: const TextStyle(fontSize: 14, color: Colors.white),
                   ),
                   const SizedBox(height: 16),
                   GestureDetector(

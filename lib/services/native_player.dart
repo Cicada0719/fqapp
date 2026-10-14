@@ -1,8 +1,27 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/services.dart';
 
 import 'app_log.dart';
+
+// Codec metadata only: never log the whole platform payload or exception text.
+final _decoderToken = RegExp(r'^[A-Za-z0-9_.+/-]{1,160}$');
+
+Map<String, Object> _safeDecoderDiagnostics(Object? value) {
+  if (value is! Map) return const {};
+  String? token(Object? raw) =>
+      raw is String && _decoderToken.hasMatch(raw) ? raw : null;
+  return {
+    for (final key in ['name', 'mimeType', 'diagnosticInfo'])
+      if (token(value[key]) case final String safe) key: safe,
+    if (value['fallbackDecoders'] case final List fallbacks)
+      'fallbackDecoders': [
+        for (final name in fallbacks.take(8))
+          if (token(name) case final String safe) safe,
+      ],
+  };
+}
 
 class NativePlaybackException implements Exception {
   final String message;
@@ -434,11 +453,31 @@ class NativePlayer {
         }
       case 'error':
         final error = NativePlaybackException.fromEvent(event['value']);
+        final value = event['value'];
+        AppLog.d(
+          'player-decoder',
+          jsonEncode({
+            'playerId': _playerId,
+            'phase': 'failed',
+            'errorCode': error.errorCode,
+            'httpStatusCode': error.httpStatusCode,
+            ..._safeDecoderDiagnostics(value is Map ? value['decoder'] : null),
+          }),
+        );
         _lastError = error;
         if (!_createdCompleter.isCompleted) {
           _createdCompleter.completeError(error);
         }
         if (!_errorCtrl.isClosed) _errorCtrl.add(error);
+      case 'decoderInitialized':
+        AppLog.d(
+          'player-decoder',
+          jsonEncode({
+            'playerId': _playerId,
+            'phase': 'initialized',
+            ..._safeDecoderDiagnostics(event['value']),
+          }),
+        );
       case 'position':
         final value = event['value'];
         if (value is! num) return;

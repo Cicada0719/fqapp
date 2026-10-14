@@ -28,7 +28,10 @@ import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSourceException
 import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.HttpDataSource
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.analytics.AnalyticsListener
+import androidx.media3.exoplayer.mediacodec.MediaCodecRenderer.DecoderInitializationException
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import com.example.shortplay.CryptoNative
 import io.flutter.embedding.engine.plugins.FlutterPlugin
@@ -52,7 +55,12 @@ import java.util.concurrent.atomic.AtomicInteger
 @androidx.annotation.OptIn(UnstableApi::class)
 class NativePlayerPlugin internal constructor(
     private val cryptoStream: CryptoStream = JniCryptoStream,
-    private val playerFactory: (Context) -> ExoPlayer = { ExoPlayer.Builder(it).build() }
+    private val playerFactory: (Context) -> ExoPlayer = { context ->
+        // Note: decoder init fallback and 206 diagnostics — see
+        // .agents/notes/implemented/bug-fix/2026-10-15-issue2-decoder-initialization-fallback.md.
+        val renderers = DefaultRenderersFactory(context).setEnableDecoderFallback(true)
+        ExoPlayer.Builder(context, renderers).build()
+    }
 ) : FlutterPlugin, MethodChannel.MethodCallHandler, ActivityAware,
     PluginRegistry.RequestPermissionsResultListener {
 
@@ -445,6 +453,17 @@ class NativePlayerPlugin internal constructor(
     private fun setupPlayerListener(playerId: Int, player: ExoPlayer, diagnosticUrl: String?) {
         var firstFrameSent = false
 
+        player.addAnalyticsListener(object : AnalyticsListener {
+            override fun onVideoDecoderInitialized(
+                eventTime: AnalyticsListener.EventTime,
+                decoderName: String,
+                initializedTimestampMs: Long,
+                initializationDurationMs: Long
+            ) {
+                sendEvent(playerId, "decoderInitialized", mapOf("name" to decoderName))
+            }
+        })
+
         player.addListener(object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
                 when (playbackState) {
@@ -527,11 +546,29 @@ class NativePlayerPlugin internal constructor(
                         "message" to "Playback failed",
                         "errorCode" to error.errorCode,
                         "httpStatusCode" to (httpError?.responseCode
-                            ?: diagnosticUrl?.let(cryptoStream::lastHttpStatus))
+                            ?: diagnosticUrl?.let(cryptoStream::lastHttpStatus)),
+                        "decoder" to decoderDiagnostics(error)
                     )
                 )
             }
         })
+    }
+
+    private fun decoderDiagnostics(error: Throwable): Map<String, Any?>? {
+        val failure = generateSequence(error) { it.cause }
+            .take(8)
+            .filterIsInstance<DecoderInitializationException>()
+            .firstOrNull() ?: return null
+        // Only codec metadata crosses the bridge. Exception messages and Format
+        // dumps may contain media identifiers or URLs and are deliberately omitted.
+        return mapOf(
+            "name" to failure.codecInfo?.name,
+            "mimeType" to failure.mimeType,
+            "diagnosticInfo" to failure.diagnosticInfo,
+            "fallbackDecoders" to generateSequence(failure.fallbackDecoderInitializationException) {
+                it.fallbackDecoderInitializationException
+            }.take(8).mapNotNull { it.codecInfo?.name }.toList()
+        )
     }
 
     private fun startPositionUpdates(playerId: Int) {

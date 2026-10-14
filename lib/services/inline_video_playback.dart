@@ -14,6 +14,7 @@ import 'drama_mute_preferences.dart';
 import 'episode_source_cache.dart';
 import 'library_store.dart';
 import 'native_player.dart';
+import 'playback_issue.dart';
 import 'player_history.dart';
 import 'player_panel_preferences.dart';
 import 'player_preferences.dart';
@@ -951,7 +952,9 @@ class InlineVideoPlayback {
   Future<void> _fail(Object failure) async {
     if (_disposed) return;
     ++_generation;
-    error.value = userFacingError(failure);
+    error.value = failure is NativePlaybackException
+        ? PlaybackIssue.fromError(failure).title
+        : userFacingError(failure);
     firstFrame.value = false;
     playing.value = false;
     await _teardown();
