@@ -15,17 +15,22 @@ class ListeningSession extends ChangeNotifier {
   Duration duration = Duration.zero;
   bool playing = false;
 
+  /// System TTS reports character progress, never a fabricated audio duration.
+  double? textProgress;
+
   DateTime _lastNotify = DateTime.fromMillisecondsSinceEpoch(0);
 
   /// Whether this session is narrating the given chapter right now.
   bool matches(String bookId, String chapterId) =>
       playing && this.bookId == bookId && this.chapterId == chapterId;
 
-  /// Estimated progress through the chapter (0..1) — our narration is one
-  /// audio file per chapter, so page following can only be proportional.
-  double get progress => duration > Duration.zero
-      ? (position.inMilliseconds / duration.inMilliseconds).clamp(0.0, 1.0)
-      : 0;
+  /// Estimated chapter progress (0..1), from text position for system TTS or
+  /// elapsed audio time for recordings. Reader page following is proportional.
+  double get progress =>
+      textProgress ??
+      (duration > Duration.zero
+          ? (position.inMilliseconds / duration.inMilliseconds).clamp(0.0, 1.0)
+          : 0);
 
   /// Publishes a state change. Position updates arrive far more often than the
   /// reader needs, so notifications are throttled to one per second unless
@@ -37,8 +42,10 @@ class ListeningSession extends ChangeNotifier {
     required Duration position,
     required Duration duration,
     required bool playing,
+    double? textProgress,
   }) {
-    final structural = this.bookId != bookId ||
+    final structural =
+        this.bookId != bookId ||
         this.chapterId != chapterId ||
         this.playing != playing;
     this.bookId = bookId;
@@ -47,6 +54,7 @@ class ListeningSession extends ChangeNotifier {
     this.position = position;
     this.duration = duration;
     this.playing = playing;
+    this.textProgress = textProgress;
     final now = DateTime.now();
     if (structural ||
         now.difference(_lastNotify) >= const Duration(seconds: 1)) {
@@ -64,6 +72,7 @@ class ListeningSession extends ChangeNotifier {
     position = Duration.zero;
     duration = Duration.zero;
     playing = false;
+    textProgress = null;
     notifyListeners();
   }
 }

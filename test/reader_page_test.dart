@@ -51,7 +51,7 @@ void main() {
   });
 
   testWidgets(
-    'local-only reader skips ideas and hides online listening actions',
+    'local-only reader skips ideas and offers system listening without caching',
     (tester) async {
       var ideaRequests = 0;
       await tester.pumpWidget(
@@ -66,7 +66,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(ideaRequests, 0);
       await _openMenu(tester);
-      expect(find.text('听书'), findsNothing);
+      expect(find.text('听书'), findsOneWidget);
       await _openSettings(tester);
       expect(find.text('缓存'), findsNothing);
       expect(find.byKey(const ValueKey('reader-action-listen')), findsNothing);

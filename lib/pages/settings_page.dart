@@ -19,6 +19,7 @@ import 'cached_dramas_page.dart';
 import 'library_backup_page.dart';
 import 'log_viewer_page.dart';
 import 'settings_category_page.dart';
+import 'system_tts_settings_page.dart';
 
 /// Settings home: a list of category entries (PiliPlus multi-level
 /// navigation). Each category opens its own CommonSetting-style page.
@@ -46,8 +47,19 @@ class SettingsPage extends StatelessWidget {
       SettingsCategory(
         icon: LucideIcons.headphones,
         title: '听书',
-        subtitle: '后台播放与通知栏控制',
-        items: [_backgroundAudioItem()],
+        subtitle: '后台播放、通知栏控制与系统朗读',
+        items: [
+          _backgroundAudioItem(),
+          SettingsItem(
+            icon: LucideIcons.mic,
+            title: '系统朗读',
+            subtitle: '选择 TTS 引擎与语速，支持本地书',
+            onTap: (context, setState) => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const SystemTtsSettingsPage()),
+            ),
+          ),
+        ],
       ),
       SettingsCategory(
         icon: LucideIcons.film,

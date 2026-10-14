@@ -11,12 +11,20 @@ class AudioPlaybackScope extends StatefulWidget {
   final GlobalKey<NavigatorState> navigatorKey;
   final Widget child;
 
+  static Future<void> startSystemTts(BuildContext context, SystemTtsBook book) {
+    final owner = context.findAncestorStateOfType<_AudioPlaybackScopeState>();
+    if (owner == null) throw StateError('当前阅读入口不支持持续朗读');
+    return owner.startSystemTts(book);
+  }
+
   @override
   State<AudioPlaybackScope> createState() => _AudioPlaybackScopeState();
 }
 
 class _AudioPlaybackScopeState extends State<AudioPlaybackScope> {
   _AudioPlaybackController? _session;
+  SystemTtsPlayback? _tts;
+  SystemTtsPlayback? _ttsPage;
   Future<void> _queue = Future<void>.value();
   final _views = <_AudioPageState>{};
   bool _rebuildPending = false;
@@ -29,6 +37,7 @@ class _AudioPlaybackScopeState extends State<AudioPlaybackScope> {
   }
 
   Future<void> _beforePlay(NativePlayer player) async {
+    await _tts?.pause();
     final session = _session;
     if (session == null || session._closed) return;
     if (identical(player, session._player)) {
@@ -40,6 +49,8 @@ class _AudioPlaybackScopeState extends State<AudioPlaybackScope> {
 
   Future<_AudioPlaybackController?> acquire(AudioPage request) {
     final next = _queue.then((_) async {
+      if (!mounted) return null;
+      await _closeTts();
       if (!mounted) return null;
       final current = _session;
       if (current != null &&
@@ -103,6 +114,72 @@ class _AudioPlaybackScopeState extends State<AudioPlaybackScope> {
     await session?.close();
   }
 
+  Future<void> startSystemTts(SystemTtsBook book) {
+    final next = _queue.then((_) async {
+      if (!mounted || book.chapters.isEmpty) return;
+      await _closeCurrent();
+      await _closeTts();
+      if (!mounted) return;
+      late final SystemTtsPlayback session;
+      session = SystemTtsPlayback(
+        book,
+        beforePlay: () async {
+          if (mounted && identical(_tts, session)) {
+            await NativePlayer.pauseOthers();
+          }
+        },
+        onStop: () => unawaited(stopTts(session)),
+      );
+      _tts = session;
+      session.addListener(_changed);
+      session.start();
+      _changed();
+    });
+    _queue = next.catchError((Object _) {});
+    return next;
+  }
+
+  Future<void> stopTts(SystemTtsPlayback session) {
+    final next = _queue.then((_) async {
+      if (identical(_tts, session)) await _closeTts();
+    });
+    _queue = next.catchError((Object _) {});
+    return next;
+  }
+
+  Future<void> _closeTts() async {
+    final session = _tts;
+    _tts = null;
+    session?.removeListener(_changed);
+    _changed();
+    await session?.close();
+  }
+
+  void _openTts(SystemTtsPlayback session) {
+    if (session.closed ||
+        !identical(_tts, session) ||
+        identical(_ttsPage, session)) {
+      return;
+    }
+    final navigator = widget.navigatorKey.currentState;
+    if (navigator == null) return;
+    _ttsPage = session;
+    unawaited(
+      navigator
+          .push<void>(
+            MaterialPageRoute<void>(
+              builder: (_) => SystemTtsPlaybackPage(
+                session: session,
+                onClose: () => unawaited(stopTts(session)),
+              ),
+            ),
+          )
+          .whenComplete(() {
+            if (identical(_ttsPage, session)) _ttsPage = null;
+          }),
+    );
+  }
+
   void viewChanged(_AudioPageState view) {
     _views.add(view);
     _changed();
@@ -160,12 +237,17 @@ class _AudioPlaybackScopeState extends State<AudioPlaybackScope> {
     session?.removeListener(_changed);
     // Descendant audio/reader views finish detaching before close broadcasts.
     if (session != null) unawaited(Future<void>.microtask(session.close));
+    final tts = _tts;
+    _tts = null;
+    tts?.removeListener(_changed);
+    if (tts != null) unawaited(Future<void>.microtask(tts.close));
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     final session = _session;
+    final tts = _tts;
     final showBar =
         session != null &&
         !session._closed &&
@@ -173,6 +255,12 @@ class _AudioPlaybackScopeState extends State<AudioPlaybackScope> {
     return Column(
       children: [
         Expanded(child: widget.child),
+        if (tts != null && !tts.closed)
+          SystemTtsMiniBar(
+            session: tts,
+            onOpen: () => _openTts(tts),
+            onClose: () => unawaited(stopTts(tts)),
+          ),
         if (showBar)
           Material(
             color: Theme.of(context).colorScheme.surfaceContainer,

@@ -18,6 +18,7 @@ import '../services/reader_device.dart';
 import '../services/reader_history.dart';
 import '../services/reader_preferences.dart';
 import '../services/reader_underline_store.dart';
+import '../services/system_tts.dart';
 import '../widgets/chapter_cache_sheet.dart';
 import '../widgets/reader/reader_appearance_sheet.dart';
 import '../widgets/reader/reader_bubble.dart';
@@ -195,7 +196,6 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
     if (!mounted ||
         !_routeCurrent ||
         !_appActive ||
-        widget.localOnly ||
         !_preferences.listeningFollow ||
         _autoTurnTimer != null ||
         _controlsVisible ||
@@ -668,7 +668,7 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
       view: view,
       safeArea: safeArea,
       underlined: underlined,
-      showListening: !widget.localOnly,
+      showListening: true,
       avoidBottom: avoidBottom,
     );
     return Positioned(
@@ -678,7 +678,7 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
       child: ReaderParagraphMenu(
         underlined: underlined,
         paragraphScoped: selection.isWholeParagraph,
-        showListening: !widget.localOnly,
+        showListening: true,
         isDark: preset.isDark,
         belowAnchor: below,
         onAction: (action) {
@@ -726,7 +726,6 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
         );
         if (mounted) _showMessage('已复制');
       case ReaderParagraphAction.listen:
-        if (widget.localOnly) return;
         final block = layout.blockAtOffset(selection.start);
         final textId = block?.textId;
         if (block == null || textId == null) return;
@@ -1777,8 +1776,95 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
     if (selected != null && mounted) await _jumpToChapter(selected);
   }
 
-  /// Opens the listening page for the current chapter.
-  ///
+  /// Local books use system TTS; online books offer both available sources.
+  Future<void> _openListening({int? fromMs, int? textId}) async {
+    if (_openingListening || _loading || _error != null) return;
+    final chapterId = _chapter.itemId;
+    var system = widget.localOnly;
+    if (!system) {
+      _openingListening = true;
+      try {
+        final choice = await showModalBottomSheet<bool>(
+          context: context,
+          useSafeArea: true,
+          showDragHandle: true,
+          backgroundColor: _effectivePreset.panelColor,
+          builder: (context) => Theme(
+            data: _effectivePreset.theme(Theme.of(context)),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                ListTile(
+                  leading: const Icon(Icons.headphones),
+                  title: const Text('番茄听书'),
+                  subtitle: const Text('使用作品自带音频与音色'),
+                  onTap: () => Navigator.pop(context, false),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.record_voice_over),
+                  title: const Text('系统朗读'),
+                  subtitle: const Text('使用手机已安装的 TTS 引擎'),
+                  onTap: () => Navigator.pop(context, true),
+                ),
+              ],
+            ),
+          ),
+        );
+        if (!mounted || choice == null || chapterId != _chapter.itemId) return;
+        system = choice;
+      } finally {
+        _openingListening = false;
+      }
+    }
+    if (!system) {
+      await _openUpstreamListening(fromMs: fromMs, textId: textId);
+      return;
+    }
+    _openingListening = true;
+    try {
+      _stopAutoTurn();
+      final content = _chapterContent;
+      final chapter = _chapter;
+      var offset = 0;
+      if (textId != null) {
+        final body = content.withoutLeadingTitle(chapter.title);
+        var found = false;
+        for (var i = 0; i < body.blocks.length; i++) {
+          final block = body.blocks[i];
+          if (block is! ChapterParagraph) continue;
+          if (paragraphUnderlineId(paraIndex: block.paraIndex, blockIndex: i) ==
+              textId) {
+            found = true;
+            break;
+          }
+          offset += block.text.length + 1;
+        }
+        if (!found) offset = 0;
+      }
+      // Capture data and source references before awaiting; the app session
+      // never calls this State's cache/prefetch methods after the page leaves.
+      final book = SystemTtsBook(
+        bookId: widget.bookId,
+        title: widget.title,
+        chapters: widget.chapters,
+        startIndex: _index,
+        initialContent: content,
+        startOffset: offset,
+        localOnly: widget.localOnly,
+        textLoader: widget.chapterLoader,
+        cache: widget.chapterCache,
+      );
+      await _persistProgress();
+      if (!mounted || chapterId != _chapter.itemId) return;
+      setState(() => _controlsVisible = false);
+      await AudioPlaybackScope.startSystemTts(context, book);
+    } catch (e) {
+      if (mounted) _showMessage(SystemTts.errorMessage(e));
+    } finally {
+      _openingListening = false;
+    }
+  }
+
   /// [fromMs] is the pressed paragraph's place on the spoken timeline the
   /// chapter shipped with (`<span start_time>`), so 从本段听 starts there
   /// instead of at the chapter's opening. [textId] non-null marks the request
@@ -1789,8 +1875,7 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
   /// times. Reading never waits on that; the timeline is fetched here, once,
   /// because the user asked to listen from a paragraph. The fetch is bounded,
   /// and a failure still opens the page at the chapter start.
-  Future<void> _openListening({int? fromMs, int? textId}) async {
-    if (widget.localOnly) return;
+  Future<void> _openUpstreamListening({int? fromMs, int? textId}) async {
     final paragraphAnchored = textId != null;
     if (_openingListening) return;
     _openingListening = true;
@@ -2609,7 +2694,7 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
       onAppearance: _showAppearanceSettings,
       onCache: _showCache,
       onListen: () => unawaited(_openListening()),
-      showListening: !widget.localOnly,
+      showListening: true,
       showCache: !widget.localOnly,
       autoTurnActive: _autoTurnTimer != null,
       onAutoTurn: _toggleAutoTurn,

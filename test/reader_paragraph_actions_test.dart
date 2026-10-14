@@ -481,7 +481,7 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('local-only paragraph actions omit 从本段听', (tester) async {
+  testWidgets('local-only paragraph actions offer 从本段听 via system TTS', (tester) async {
     await tester.binding.setSurfaceSize(const Size(400, 800));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     await tester.pumpWidget(_app(_MemoryUnderlines(), localOnly: true));
@@ -489,8 +489,8 @@ void main() {
 
     await _longPressParagraph(tester, 0);
     expect(find.byKey(const ValueKey('reader-action-copy')), findsOneWidget);
-    expect(find.byKey(const ValueKey('reader-action-listen')), findsNothing);
-    expect(find.text('从本段听'), findsNothing);
+    expect(find.byKey(const ValueKey('reader-action-listen')), findsOneWidget);
+    expect(find.text('从本段听'), findsOneWidget);
     expect(
       find.byKey(const ValueKey('reader-action-underline')),
       findsOneWidget,
@@ -574,6 +574,8 @@ void main() {
     await tester.pumpAndSettle();
 
     // The listening page is pushed on top of the reader for this chapter.
+    await tester.tap(find.text('番茄听书'));
+    await tester.pumpAndSettle();
     expect(find.byType(AudioPage), findsOneWidget);
     final audio = tester.widget<AudioPage>(find.byType(AudioPage));
     expect(audio.bookId, 'reader-test');
@@ -602,6 +604,8 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('reader-action-listen')));
     await tester.pumpAndSettle();
 
+    await tester.tap(find.text('番茄听书'));
+    await tester.pumpAndSettle();
     final audio = tester.widget<AudioPage>(find.byType(AudioPage));
     expect(audio.startPosition, Duration.zero);
     expect(tester.takeException(), isNull);
@@ -649,6 +653,8 @@ void main() {
 
       // Asking to listen from a paragraph pays for the timeline exactly once,
       // and the resulting position comes from the freshly parsed chapter.
+      await tester.tap(find.text('番茄听书'));
+      await tester.pumpAndSettle();
       expect(requests.where((id) => id == 'c1'), hasLength(1));
       final audio = tester.widget<AudioPage>(find.byType(AudioPage));
       expect(audio.startPosition, const Duration(milliseconds: 4200));

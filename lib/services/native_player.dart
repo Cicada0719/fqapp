@@ -65,7 +65,7 @@ class NativePlayer {
   /// generation below cancels a pending play if another player pauses it.
   static Future<void> Function(NativePlayer)? beforePlay;
 
-  static Future<void> pauseOthers(NativePlayer active) async {
+  static Future<void> pauseOthers([NativePlayer? active]) async {
     for (final player in _instances.values.toList(growable: false)) {
       if (!identical(player, active) && player._playWhenReady) {
         await player.pause();
