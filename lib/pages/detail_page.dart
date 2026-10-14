@@ -1101,6 +1101,7 @@ class _DetailPageState extends State<DetailPage> {
         historyStore: widget.readerStore,
         chapters: _allChapters,
         startIndex: startIndex,
+        resumeSession: false,
       ),
       'manga' => ComicReaderPage(
         bookId: _contentId,

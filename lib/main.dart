@@ -10,6 +10,7 @@ import 'dart:async';
 import 'dart:ui' show ImageFilter;
 
 import 'pages/home_page.dart';
+import 'pages/audio_page.dart';
 import 'pages/cached_books_page.dart';
 import 'pages/drama_page.dart';
 import 'pages/library_page.dart';
@@ -132,8 +133,15 @@ Future<void> _initializeLocalData() async {
   einkModeNotifier.value = sp.getBool(einkModeKey) ?? false;
 }
 
-class FqApp extends StatelessWidget {
+class FqApp extends StatefulWidget {
   const FqApp({super.key});
+
+  @override
+  State<FqApp> createState() => _FqAppState();
+}
+
+class _FqAppState extends State<FqApp> {
+  final _navigatorKey = GlobalKey<NavigatorState>();
 
   @override
   Widget build(BuildContext context) {
@@ -146,6 +154,11 @@ class FqApp extends StatelessWidget {
             // 墨水屏强制浅色纯黑白：深色反白在墨水屏上残影最重。
             final effectiveMode = eink ? ThemeMode.light : mode;
             return MaterialApp(
+              navigatorKey: _navigatorKey,
+              builder: (context, child) => AudioPlaybackScope(
+                navigatorKey: _navigatorKey,
+                child: child ?? const SizedBox.shrink(),
+              ),
               title: '番茄小铺',
               debugShowCheckedModeBanner: false,
               theme: _theme(Brightness.light, eink: eink),

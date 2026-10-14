@@ -61,6 +61,18 @@ class NativePlayer {
   static const _methodTimeout = Duration(seconds: 10);
   static const _createTimeout = Duration(seconds: 25);
 
+  /// The app's listening owner coordinates audio with video playback. The
+  /// generation below cancels a pending play if another player pauses it.
+  static Future<void> Function(NativePlayer)? beforePlay;
+
+  static Future<void> pauseOthers(NativePlayer active) async {
+    for (final player in _instances.values.toList(growable: false)) {
+      if (!identical(player, active) && player._playWhenReady) {
+        await player.pause();
+      }
+    }
+  }
+
   static void Function(String action)? _onRemoteAction;
   static VoidCallback? _onBecomingNoisy;
 
@@ -302,6 +314,10 @@ class NativePlayer {
     final previous = _playWhenReady;
     _updatePlayWhenReady(value);
     try {
+      if (value) {
+        await beforePlay?.call(this);
+        if (_disposed || generation != _playWhenReadyGeneration) return;
+      }
       await _invoke(value ? 'play' : 'pause');
     } catch (_) {
       if (!_disposed && generation == _playWhenReadyGeneration) {
@@ -368,16 +384,18 @@ class NativePlayer {
     double speed = 1,
   }) async {
     try {
-      await _channel.invokeMethod<void>('startListenForeground', {
-        'title': title,
-        'episode': episode,
-        'playing': playing,
-        'hasPrev': hasPrev,
-        'hasNext': hasNext,
-        'positionMs': positionMs,
-        'durationMs': durationMs,
-        'speed': speed,
-      });
+      await _channel
+          .invokeMethod<void>('startListenForeground', {
+            'title': title,
+            'episode': episode,
+            'playing': playing,
+            'hasPrev': hasPrev,
+            'hasNext': hasNext,
+            'positionMs': positionMs,
+            'durationMs': durationMs,
+            'speed': speed,
+          })
+          .timeout(_methodTimeout);
     } catch (_) {
       // Best effort when channel/platform is unavailable or testing.
     }
@@ -385,7 +403,9 @@ class NativePlayer {
 
   static Future<void> stopListenForeground() async {
     try {
-      await _channel.invokeMethod<void>('stopListenForeground');
+      await _channel
+          .invokeMethod<void>('stopListenForeground')
+          .timeout(_methodTimeout);
     } catch (_) {
       // Best effort when channel/platform is unavailable or testing.
     }

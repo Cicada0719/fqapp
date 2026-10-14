@@ -193,16 +193,27 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
 
   void _onListeningTick() {
     if (!mounted ||
+        !_routeCurrent ||
+        !_appActive ||
         widget.localOnly ||
         !_preferences.listeningFollow ||
         _autoTurnTimer != null ||
         _controlsVisible ||
         _loading ||
+        _changingChapter ||
         _error != null) {
       return;
     }
     if (DateTime.now().isBefore(_listenFollowPausedUntil)) return;
     final session = ListeningSession.instance;
+    if (!session.playing || session.bookId != widget.bookId) return;
+    if (session.chapterId != _chapter.itemId) {
+      final next = widget.chapters.indexWhere(
+        (c) => c.itemId == session.chapterId,
+      );
+      if (next >= 0) unawaited(_jumpToChapter(next, followListening: true));
+      return;
+    }
     if (!session.matches(widget.bookId, _chapter.itemId)) return;
     final progress = session.progress;
     if (_paged) {
@@ -1608,7 +1619,8 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _jumpToChapter(int index) async {
+  Future<void> _jumpToChapter(int index, {bool followListening = false}) async {
+    if (!followListening) _pauseListenFollow();
     if (_changingChapter ||
         index == _index ||
         index < 0 ||
@@ -1620,6 +1632,19 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
       _settleReadTime();
       await _persistProgress();
       if (!mounted) return;
+      if (followListening &&
+          (!_routeCurrent ||
+              !_appActive ||
+              _controlsVisible ||
+              !_preferences.listeningFollow ||
+              _autoTurnTimer != null ||
+              DateTime.now().isBefore(_listenFollowPausedUntil) ||
+              !ListeningSession.instance.matches(
+                widget.bookId,
+                widget.chapters[index].itemId,
+              ))) {
+        return;
+      }
       setState(() {
         _index = index;
         _chapterSeekValue = null;
@@ -1800,6 +1825,7 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
             cover: widget.cover,
             chapters: widget.chapters,
             startIndex: chapterIndex,
+            resumeSession: false,
             // A paragraph-anchored request always carries an explicit start:
             // Duration.zero means "this paragraph has no audio, begin at the
             // chapter opening" and must not fall back to saved history.
@@ -2753,7 +2779,12 @@ class _ChapterDirectorySheetState extends State<_ChapterDirectorySheet> {
         ),
         Expanded(
           child: indexes.isEmpty
-              ? const Center(child: Text('没有匹配的章节'))
+              ? Center(
+                  child: Text(
+                    '没有匹配的章节',
+                    style: TextStyle(color: scheme.onSurface),
+                  ),
+                )
               : ListView.builder(
                   controller: _scrollController,
                   itemExtent: _itemExtent,

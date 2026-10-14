@@ -155,6 +155,26 @@ extension ReaderThemeColors on ReaderThemePreset {
         bodyColor: textColor,
         displayColor: textColor,
       ),
+      // Note: AppTheme fixes ListTile text colours explicitly; changing only
+      // colorScheme leaves light-app/dark-reader chapter titles dark on dark.
+      // See .agents/notes/implemented/bug-fix/2026-10-15-reader-directory-theme.md.
+      listTileTheme: base.listTileTheme.copyWith(
+        textColor: textColor,
+        iconColor: mutedTextColor,
+        selectedColor: accentColor,
+        titleTextStyle: (base.listTileTheme.titleTextStyle ?? const TextStyle())
+            .copyWith(color: textColor),
+        subtitleTextStyle:
+            (base.listTileTheme.subtitleTextStyle ?? const TextStyle())
+                .copyWith(color: mutedTextColor),
+      ),
+      iconTheme: base.iconTheme.copyWith(color: mutedTextColor),
+      inputDecorationTheme: base.inputDecorationTheme.copyWith(
+        fillColor: fieldColor,
+        hintStyle: TextStyle(color: mutedTextColor),
+        prefixIconColor: mutedTextColor,
+        suffixIconColor: mutedTextColor,
+      ),
       dividerColor: borderColor,
       sliderTheme: base.sliderTheme.copyWith(
         activeTrackColor: accentColor,

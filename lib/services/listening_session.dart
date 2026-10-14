@@ -1,8 +1,8 @@
 import 'package:flutter/foundation.dart';
 
-/// Listening state shared between the audio page and the reader, so the
+/// Listening state shared between the playback controller and the reader, so the
 /// reader can follow the narration while 听书跟随翻页 is on — the official
-/// 「听书进度支持自动翻页」 behaviour. The audio page publishes; the reader
+/// 「听书进度支持自动翻页」 behaviour. The controller publishes; the reader
 /// reads. See .agents/notes/implemented/feature/2026-09-11-reader-paragraph-bubble.md
 class ListeningSession extends ChangeNotifier {
   ListeningSession._();
@@ -55,7 +55,7 @@ class ListeningSession extends ChangeNotifier {
     }
   }
 
-  /// The audio page stopped or left; the reader must not keep following.
+  /// Playback closed or failed; the reader must not keep following.
   void clear() {
     if (!playing && bookId == null && chapterId == null) return;
     bookId = null;
