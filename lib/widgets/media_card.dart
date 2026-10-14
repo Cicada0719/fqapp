@@ -53,8 +53,14 @@ const _authorHeight = 14.0;
 class MediaCard extends StatelessWidget {
   final MediaItem item;
   final VoidCallback onTap;
+  final bool showScore;
 
-  const MediaCard({super.key, required this.item, required this.onTap});
+  const MediaCard({
+    super.key,
+    required this.item,
+    required this.onTap,
+    this.showScore = false,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -106,8 +112,9 @@ class MediaCard extends StatelessWidget {
                             fit: BoxFit.cover,
                             memCacheWidth: cacheWidth,
                             memCacheHeight: cacheHeight,
-                            placeholder: (context, url) =>
-                                ColoredBox(color: scheme.surfaceContainerHighest),
+                            placeholder: (context, url) => ColoredBox(
+                              color: scheme.surfaceContainerHighest,
+                            ),
                             errorWidget: (context, url, error) => Container(
                               color: scheme.surfaceContainerHighest,
                               child: Icon(
@@ -136,8 +143,9 @@ class MediaCard extends StatelessWidget {
                       vertical: 2.5,
                     ),
                     decoration: BoxDecoration(
-                      color: (kindColors[item.kind] ?? Colors.grey)
-                          .withValues(alpha: 0.92),
+                      color: (kindColors[item.kind] ?? Colors.grey).withValues(
+                        alpha: 0.92,
+                      ),
                       borderRadius: BorderRadius.circular(6),
                       boxShadow: [
                         BoxShadow(
@@ -197,15 +205,33 @@ class MediaCard extends StatelessWidget {
           const SizedBox(height: 2),
           SizedBox(
             height: authorHeight,
-            child: Text(
-              item.author,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                fontSize: 11,
-                height: 1.2,
-                color: scheme.onSurfaceVariant,
-              ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    item.author,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 11,
+                      height: 1.2,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+                if (showScore && item.score != null) ...[
+                  const SizedBox(width: 4),
+                  Text(
+                    '${item.score!.toStringAsFixed(1)}分',
+                    style: TextStyle(
+                      fontSize: 11,
+                      height: 1.2,
+                      color: scheme.primary,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ],
             ),
           ),
         ],

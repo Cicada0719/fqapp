@@ -38,6 +38,9 @@ class MediaItem {
   final String ep;
   final String kind; // 'book' | 'video' | 'manju' | 'manga' | 'audio'
 
+  /// Upstream rating on a 0–10 scale; absent or invalid ratings stay unknown.
+  final double? score;
+
   /// Decorative corner tag the upstream attaches to some cards, e.g. `上新` or
   /// `爆款`. Null when the card carries none.
   final MediaTag? tag;
@@ -77,6 +80,7 @@ class MediaItem {
     required this.badge,
     required this.ep,
     required this.kind,
+    this.score,
     this.tag,
     this.seriesId,
     this.episodeId,
@@ -103,6 +107,7 @@ class MediaItem {
     String? badge,
     String? ep,
     String? kind,
+    double? score,
     MediaTag? tag,
     String? seriesId,
     String? episodeId,
@@ -119,6 +124,7 @@ class MediaItem {
     badge: badge ?? this.badge,
     ep: ep ?? this.ep,
     kind: kind ?? this.kind,
+    score: score ?? this.score,
     tag: tag ?? this.tag,
     seriesId: seriesId ?? this.seriesId,
     episodeId: episodeId ?? this.episodeId,
@@ -232,12 +238,18 @@ class MediaItem {
           _firstString(item, idKeys) ??
           '',
       kind: kind,
+      score: _validScore(bd['score'] ?? item['score']),
       seriesId: seriesId,
       episodeId: episodeId,
       tag: MediaTag.fromRaw(tagInfo),
       title:
           highlightTitle ??
-          _firstString(item, ['series_title', 'title', 'name', 'raw_book_name']) ??
+          _firstString(item, [
+            'series_title',
+            'title',
+            'name',
+            'raw_book_name',
+          ]) ??
           _firstString(bd, ['title', 'name', 'raw_book_name', 'book_name']) ??
           _firstString(item, ['book_name']) ??
           _firstString(item, ['cell_name']) ??
@@ -299,6 +311,13 @@ class MediaItem {
       episodeListText: episodeListText,
       aiGenerated: aiUsageType > 0,
     );
+  }
+
+  static double? _validScore(Object? raw) {
+    final value = double.tryParse(raw?.toString().trim() ?? '');
+    return value != null && value.isFinite && value > 0 && value <= 10
+        ? value
+        : null;
   }
 
   static bool _isVideoItem(Map<String, dynamic> item, Map<String, dynamic> bd) {
@@ -738,13 +757,14 @@ List<List<Chapter>> parseDirectory(Map<String, dynamic> payload) {
   if (inner is List) {
     final entries = _asMapList(inner);
     if (entries != null && entries.isNotEmpty) {
-      final chapters = [
-        for (var i = 0; i < entries.length; i++)
-          Chapter.fromRaw(entries[i], index: i),
-      ]
-          .map((chapter) => _withVersion(chapter, versions))
-          .where((chapter) => chapter.itemId.isNotEmpty)
-          .toList();
+      final chapters =
+          [
+                for (var i = 0; i < entries.length; i++)
+                  Chapter.fromRaw(entries[i], index: i),
+              ]
+              .map((chapter) => _withVersion(chapter, versions))
+              .where((chapter) => chapter.itemId.isNotEmpty)
+              .toList();
       return chapters.isEmpty ? [] : [chapters];
     }
   }
@@ -874,7 +894,13 @@ List<SearchTab> parseSearchTabs(Map<String, dynamic> payload, {int? tabType}) {
   final tabs = data['search_tabs'];
   if (tabs is! List) return [];
 
-  final requestedTitle = const {1: '综合', 11: '短剧', 8: '漫画', 2: '听书'}[tabType];
+  final requestedTitle = const {
+    1: '综合',
+    3: '书籍',
+    11: '短剧',
+    8: '漫画',
+    2: '听书',
+  }[tabType];
   final selected = tabType == null
       ? tabs
       : tabs.where((tab) {
@@ -1080,7 +1106,9 @@ List<MediaItem> parseMediaItems(Map<String, dynamic> payload, {String? kind}) {
           // `MediaItem.fromRaw` 只在一个平面里找字段。
           final detail = child['video_detail'];
           final merged = Map<String, dynamic>.from(map)
-            ..addAll(detail is Map ? Map<String, dynamic>.from(detail) : const {})
+            ..addAll(
+              detail is Map ? Map<String, dynamic>.from(detail) : const {},
+            )
             ..addAll(Map<String, dynamic>.from(child));
           add(merged);
         }
@@ -1235,9 +1263,7 @@ List<String> _secondaryCategories(dynamic secondaryInfos, {dynamic fallback}) {
     }
   }
   if (names.isEmpty && fallback is String && fallback.trim().isNotEmpty) {
-    final matches = RegExp(
-      '"name"\\s*:\\s*"([^"]+)"',
-    ).allMatches(fallback);
+    final matches = RegExp('"name"\\s*:\\s*"([^"]+)"').allMatches(fallback);
     for (final match in matches) {
       final name = match.group(1)?.trim() ?? '';
       if (name.isNotEmpty) names.add(name);
@@ -1255,6 +1281,7 @@ extension MediaItemJson on MediaItem {
     'badge': badge,
     'ep': ep,
     'kind': kind,
+    if (score != null) 'score': score,
     if (seriesId != null) 'seriesId': seriesId,
     if (episodeId != null) 'episodeId': episodeId,
     if (intro.isNotEmpty) 'intro': intro,
@@ -1287,15 +1314,16 @@ extension MediaItemJson on MediaItem {
       badge: field('badge'),
       ep: field('ep'),
       kind: kind,
-      tag: MediaTag.fromRaw(map['tag'] is Map ? (map['tag'] as Map).cast<String, dynamic>() : null),
+      score: MediaItem._validScore(map['score']),
+      tag: MediaTag.fromRaw(
+        map['tag'] is Map ? (map['tag'] as Map).cast<String, dynamic>() : null,
+      ),
       seriesId: (map['seriesId'] as String?),
       episodeId: (map['episodeId'] as String?),
       intro: field('intro'),
       followerCount: _asInt(map['followerCount']) ?? 0,
       categories: map['categories'] is List
-          ? List.unmodifiable(
-              (map['categories'] as List).map((e) => '$e'),
-            )
+          ? List.unmodifiable((map['categories'] as List).map((e) => '$e'))
           : const [],
       episodeListText: field('episodeListText'),
       aiGenerated: map['aiGenerated'] == true,

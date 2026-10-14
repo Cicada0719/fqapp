@@ -13,6 +13,145 @@ void main() {
   setUp(() => SharedPreferences.setMockInitialValues({}));
 
   testWidgets(
+    'a category can be chosen before search and survives new queries',
+    (tester) async {
+      final requests = <(String, int, int)>[];
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SearchPage(
+            searchLoader:
+                (query, {required int tabType, required int offset}) async {
+                  requests.add((query, tabType, offset));
+                  return [
+                    SearchTab(
+                      title: '书籍',
+                      items: [_item(query, '$query 结果')],
+                      hasMore: false,
+                    ),
+                  ];
+                },
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(ChoiceChip, '小说'));
+      await tester.pumpAndSettle();
+      expect(requests, isEmpty);
+      for (final query in ['修仙', '悬疑']) {
+        await tester.enterText(find.byType(TextField), query);
+        await tester.testTextInput.receiveAction(TextInputAction.search);
+        await tester.pumpAndSettle();
+        expect(requests.last, (query, 3, 0));
+        expect(find.text('$query 结果'), findsOneWidget);
+      }
+      await tester.tap(find.byTooltip('清空'));
+      await tester.pumpAndSettle();
+      expect(
+        tester
+            .widget<ChoiceChip>(find.widgetWithText(ChoiceChip, '小说'))
+            .selected,
+        isTrue,
+      );
+      expect(requests, hasLength(2));
+    },
+  );
+
+  testWidgets(
+    'rating-empty pages keep manual continuation at upstream cursors',
+    (tester) async {
+      final offsets = <int>[];
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SearchPage(
+            searchLoader:
+                (query, {required int tabType, required int offset}) async {
+                  offsets.add(offset);
+                  return [
+                    SearchTab(
+                      title: '综合',
+                      items: switch (offset) {
+                        0 => [_item('low', '低分作品', score: 8.2)],
+                        14 => [_item('unknown', '未评分作品')],
+                        _ => [_item('high', '高分作品', score: 9.3)],
+                      },
+                      hasMore: offset < 27,
+                      nextOffset: offset == 0 ? 14 : 27,
+                    ),
+                  ];
+                },
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('search-minimum-score')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('9 分及以上').last);
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField), '评分');
+      await tester.testTextInput.receiveAction(TextInputAction.search);
+      await tester.pumpAndSettle();
+      expect(offsets, [0]);
+      expect(find.byType(MediaCard), findsNothing);
+      await tester.tap(find.text('加载更多'));
+      await tester.pumpAndSettle();
+      expect(offsets, [0, 14]);
+      expect(find.byType(MediaCard), findsNothing);
+      await tester.tap(find.text('加载更多'));
+      await tester.pumpAndSettle();
+      expect(offsets, [0, 14, 27]);
+      expect(find.text('高分作品'), findsOneWidget);
+      expect(find.text('9.3分'), findsOneWidget);
+      expect(find.text('没有更多了'), findsOneWidget);
+      await tester.tap(find.byKey(const Key('search-minimum-score')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('评分不限').last);
+      await tester.pumpAndSettle();
+      expect(_gridCount(tester), 3);
+      expect(offsets, [0, 14, 27]);
+    },
+  );
+
+  testWidgets('cover-free list reuses results and persists on reopening', (
+    tester,
+  ) async {
+    var requests = 0;
+    Future<List<SearchTab>> loader(
+      String query, {
+      required int tabType,
+      required int offset,
+    }) async {
+      requests++;
+      return [
+        SearchTab(
+          title: '综合',
+          items: [_item('novel', '列表作品', score: 9.1)],
+          hasMore: false,
+        ),
+      ];
+    }
+
+    await tester.pumpWidget(_app(loader));
+    await tester.pumpAndSettle();
+    expect(find.byType(MediaCard), findsOneWidget);
+    await tester.tap(find.byKey(const Key('search-layout-toggle')));
+    await tester.pumpAndSettle();
+    expect(find.byType(MediaCard), findsNothing);
+    expect(find.text('列表作品'), findsOneWidget);
+    expect(find.text('小说 · 9.1分'), findsOneWidget);
+    expect(requests, 1);
+    expect(
+      (await SharedPreferences.getInstance()).getBool('search_list_view'),
+      isTrue,
+    );
+    await tester.pumpWidget(const SizedBox());
+    await tester.pumpWidget(_app(loader));
+    await tester.pumpAndSettle();
+    expect(find.byType(MediaCard), findsNothing);
+    expect(find.text('列表作品'), findsOneWidget);
+    expect(find.byTooltip('切换为封面视图'), findsOneWidget);
+  });
+
+  testWidgets(
     'fixed categories request their own source and filter copied hits',
     (tester) async {
       final requests = <(String, int, int)>[];
@@ -51,7 +190,7 @@ void main() {
         tester
             .widgetList<ChoiceChip>(find.byType(ChoiceChip))
             .map((chip) => (chip.label as Text).data),
-        ['综合', '短剧', '漫剧', '漫画', '听书'],
+        ['综合', '小说', '短剧', '漫剧', '漫画', '听书'],
       );
       expect(_visibleKinds(tester), [
         'book',
@@ -63,6 +202,7 @@ void main() {
       expect(requests, [('测试', 1, 0)]);
 
       for (final category in [
+        ('小说', 'book', 3),
         ('短剧', 'video', 11),
         ('漫剧', 'manju', 11),
         ('漫画', 'manga', 8),
@@ -73,7 +213,7 @@ void main() {
         expect(_visibleKinds(tester), [category.$2]);
         expect(requests.last, ('测试', category.$3, 0));
       }
-      expect(requests.map((request) => request.$2), [1, 11, 11, 8, 2]);
+      expect(requests.map((request) => request.$2), [1, 3, 11, 11, 8, 2]);
 
       await tester.tap(find.widgetWithText(ChoiceChip, '综合'));
       await tester.pumpAndSettle();
@@ -86,7 +226,7 @@ void main() {
       ]);
       expect(
         requests,
-        hasLength(5),
+        hasLength(6),
         reason: 'Completed categories keep their cache',
       );
     },
@@ -497,7 +637,7 @@ void main() {
     ]);
     await tester.pumpAndSettle();
     expect(find.text('搜索历史'), findsOneWidget);
-    expect(find.byType(ChoiceChip), findsNothing);
+    expect(find.byType(ChoiceChip), findsNWidgets(6));
     await tester.tap(find.text('测试'));
     await tester.pump();
     expect(pending, hasLength(2));
@@ -619,7 +759,12 @@ int _gridCount(WidgetTester tester) {
   return (grid.delegate as SliverChildBuilderDelegate).childCount!;
 }
 
-MediaItem _item(String id, String title, {String kind = 'book'}) => MediaItem(
+MediaItem _item(
+  String id,
+  String title, {
+  String kind = 'book',
+  double? score,
+}) => MediaItem(
   id: id,
   title: title,
   cover: '',
@@ -627,6 +772,7 @@ MediaItem _item(String id, String title, {String kind = 'book'}) => MediaItem(
   badge: '',
   ep: '',
   kind: kind,
+  score: score,
 );
 
 class _DelayedHistory implements SearchHistoryRepository {

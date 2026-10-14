@@ -312,7 +312,7 @@ App 主要通过 `ApiClient` 调用后端 **`/api/*` 桥接层**（Rust 核心 `
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/v1/recommend/homepage?tab_type=&offset=&session_id=` | 首页分类推荐及游标分页 |
-| GET | `/api/v1/search?query=&tab_type=&offset=&count=10` | 搜索页按分类请求：综合 `1`、短剧/漫剧 `11`、漫画 `8`、听书 `2`，使用返回的游标 |
+| GET | `/api/v1/search?query=&tab_type=&offset=&count=10` | 搜索页按分类请求：综合 `1`、小说 `3`（上游标题书籍）、短剧/漫剧 `11`、漫画 `8`、听书 `2`，使用返回的游标；评分门槛仅筛选客户端已加载结果，不改变请求参数与游标 |
 | GET | `/api/v1/books/{id}/detail` | 按作品 ID 精确查询名称、封面和类型；详情不可用时使用同一路径的 `/directory` 中的 `book_info`。详情页的全部富元数据（分类/完结状态/字数/在读人数/评分/标签/作者等级/榜单）都取自这一份响应，不额外发请求 |
 | GET | `/api/v1/series/{id}` | 短剧／漫剧系列详情：标题、简介、集数、播放量、分类，以及**演员表**（`data.video_data.celebrities`，含 `nickname`/`role_name`/`avatar`）。也可经 `/api/v1/videos/{id}/detail` 访问。阅读类接口不含演员字段 |
 | GET | `/api/v1/books/{id}/comments` | 书评列表与页级计数（`comment_cnt`、`score_cnt`、`context`）；详情页书评区与听书页「书评」使用 |

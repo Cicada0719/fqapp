@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_lucide/flutter_lucide.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/media_item.dart';
 import '../models/media_id.dart';
@@ -61,6 +62,7 @@ class SearchPage extends StatefulWidget {
 class _SearchPageState extends State<SearchPage> {
   static const _paginationThreshold = 480.0;
   static const _categories = _SearchCategory.values;
+  static const _listViewPreference = 'search_list_view';
 
   final TextEditingController _ctrl = TextEditingController();
   final ScrollController _scrollController = ScrollController(
@@ -71,6 +73,10 @@ class _SearchPageState extends State<SearchPage> {
   String? _idQuery;
   int _tabIndex = 0;
   int _requestGeneration = 0;
+  double _minimumScore = 0;
+  bool _listView = false;
+  bool _layoutChosen = false;
+  Future<void> _layoutWrite = Future<void>.value();
 
   /// In-flight search / id-lookup. Superseded searches and page disposal cancel
   /// it so a fast typist does not leave a queue of upstream requests behind.
@@ -111,6 +117,7 @@ class _SearchPageState extends State<SearchPage> {
     super.initState();
     _scrollController.addListener(_onScroll);
     _loadHistory();
+    unawaited(_loadLayout());
     unawaited(_loadHotSearch());
     final initial = widget.initialQuery?.trim() ?? '';
     if (initial.isNotEmpty) {
@@ -119,6 +126,44 @@ class _SearchPageState extends State<SearchPage> {
       _search(initial);
     }
   }
+
+  Future<void> _loadLayout() async {
+    try {
+      final preferences = await SharedPreferences.getInstance();
+      if (!mounted || _layoutChosen) return;
+      final saved = preferences.get(_listViewPreference);
+      if (saved is bool) setState(() => _listView = saved);
+    } catch (_) {
+      // Search remains usable if local preferences cannot be read.
+    }
+  }
+
+  void _toggleLayout() {
+    final value = !_listView;
+    setState(() {
+      _layoutChosen = true;
+      _listView = value;
+    });
+    // Serialize rapid toggles so the final user choice is persisted last.
+    _layoutWrite = _layoutWrite.then((_) async {
+      try {
+        final preferences = await SharedPreferences.getInstance();
+        if (!await preferences.setBool(_listViewPreference, value)) {
+          throw StateError('Search layout was not saved');
+        }
+      } catch (_) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('视图设置未保存，本次选择仍有效')));
+      }
+    });
+  }
+
+  bool _matchesScore(MediaItem item) =>
+      _idQuery != null ||
+      _minimumScore == 0 ||
+      (item.score != null && item.score! >= _minimumScore);
 
   Future<void> _loadHotSearch() async {
     final hot = await _hotLoader();
@@ -196,10 +241,9 @@ class _SearchPageState extends State<SearchPage> {
       _draft = query;
       _suggestions = const [];
       _idQuery = asKeyword ? null : mediaIdFromSearch(query);
-      _tabIndex = 0;
       _feeds = [for (final _ in _categories) _SearchFeed()];
     });
-    await _loadTab(0);
+    await _loadTab(_tabIndex);
   }
 
   void _rememberQuery(String query) {
@@ -266,6 +310,7 @@ class _SearchPageState extends State<SearchPage> {
 
   void _showHistory() {
     _suggestDebounce?.cancel();
+    _activeRequest?.cancel();
     ++_requestGeneration;
     ++_suggestGeneration;
     setState(() {
@@ -274,7 +319,6 @@ class _SearchPageState extends State<SearchPage> {
       _draft = '';
       _suggestions = const [];
       _feeds = [for (final _ in _categories) _SearchFeed()];
-      _tabIndex = 0;
     });
   }
 
@@ -359,10 +403,13 @@ class _SearchPageState extends State<SearchPage> {
           )
           .toList();
       final page = separateManjuSearchTabs(sources).firstWhere(
-        (tab) => tab.title == category.title,
+        (tab) =>
+            tab.title == category.title ||
+            (category == _SearchCategory.book &&
+                tab.title == category.sourceTitle),
         orElse: () => SearchTab(title: category.title, items: []),
       );
-      final before = feed.items.length;
+      final before = feed.items.where(_matchesScore).length;
       setState(() {
         for (final item in page.items) {
           if (item.id.isEmpty ||
@@ -379,7 +426,7 @@ class _SearchPageState extends State<SearchPage> {
       });
       // A filtered-empty or duplicate page can still advance. Leave a manual
       // continuation instead of chaining requests without new visible results.
-      if (feed.items.length > before) {
+      if (feed.items.where(_matchesScore).length > before) {
         _scheduleLoadMoreIfNeeded(index, generation);
       }
     } catch (e) {
@@ -442,13 +489,12 @@ class _SearchPageState extends State<SearchPage> {
           decoration: BoxDecoration(
             color: palette.surface,
             borderRadius: BorderRadius.circular(21),
-            border: Border.all(
-              color: palette.line,
-              width: 0.6,
-            ),
+            border: Border.all(color: palette.line, width: 0.6),
             boxShadow: [
               BoxShadow(
-                color: palette.ink.withValues(alpha: palette.dark ? 0.12 : 0.03),
+                color: palette.ink.withValues(
+                  alpha: palette.dark ? 0.12 : 0.03,
+                ),
                 blurRadius: 6,
                 offset: const Offset(0, 1.5),
               ),
@@ -458,17 +504,11 @@ class _SearchPageState extends State<SearchPage> {
             controller: _ctrl,
             autofocus: false,
             textInputAction: TextInputAction.search,
-            style: TextStyle(
-              fontSize: 14.5,
-              color: palette.ink,
-            ),
+            style: TextStyle(fontSize: 14.5, color: palette.ink),
             decoration: InputDecoration(
               isDense: true,
               hintText: '搜索名称或作品 ID',
-              hintStyle: TextStyle(
-                fontSize: 14,
-                color: palette.muted,
-              ),
+              hintStyle: TextStyle(fontSize: 14, color: palette.muted),
               contentPadding: const EdgeInsets.symmetric(
                 horizontal: 16,
                 vertical: 10,
@@ -485,12 +525,20 @@ class _SearchPageState extends State<SearchPage> {
                     if (value.text.isNotEmpty)
                       IconButton(
                         tooltip: '清空',
-                        icon: Icon(LucideIcons.x, size: 17, color: palette.muted),
+                        icon: Icon(
+                          LucideIcons.x,
+                          size: 17,
+                          color: palette.muted,
+                        ),
                         onPressed: _clearSearchInput,
                       ),
                     IconButton(
                       tooltip: '搜索',
-                      icon: Icon(LucideIcons.search, size: 18, color: HomePalette.accent),
+                      icon: Icon(
+                        LucideIcons.search,
+                        size: 18,
+                        color: HomePalette.accent,
+                      ),
                       onPressed: () => _search(_ctrl.text),
                     ),
                   ],
@@ -504,49 +552,51 @@ class _SearchPageState extends State<SearchPage> {
       ),
       body: Column(
         children: [
-          if (_query.isNotEmpty)
-            SizedBox(
-              height: 46,
-              child: ListView(
-                scrollDirection: Axis.horizontal,
-                padding: const EdgeInsets.symmetric(horizontal: 12),
-                children: List.generate(_categories.length, (i) {
-                  final category = _categories[i];
-                  final isSelected = i == _tabIndex;
-                  return Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 4),
-                    child: ChoiceChip(
-                      label: Text(category.title),
-                      selected: isSelected,
-                      onSelected: (_) => _selectTab(i),
-                      showCheckmark: false,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(20),
-                      ),
-                      side: BorderSide(
-                        color: isSelected
-                            ? HomePalette.accent.withValues(alpha: 0.45)
-                            : palette.line,
-                        width: 0.5,
-                      ),
-                      backgroundColor: palette.surface,
-                      selectedColor:
-                          HomePalette.accent.withValues(alpha: palette.dark ? 0.2 : 0.12),
-                      labelStyle: TextStyle(
-                        fontSize: 12.5,
-                        fontWeight: isSelected
-                            ? FontWeight.w700
-                            : FontWeight.w500,
-                        color: isSelected
-                            ? palette.accentText
-                            : palette.ink,
-                      ),
-                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+          SizedBox(
+            height: 46,
+            child: ListView(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              children: List.generate(_categories.length, (i) {
+                final category = _categories[i];
+                final isSelected = i == _tabIndex;
+                return Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 4),
+                  child: ChoiceChip(
+                    label: Text(category.title),
+                    selected: isSelected,
+                    onSelected: (_) => _selectTab(i),
+                    showCheckmark: false,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(20),
                     ),
-                  );
-                }),
-              ),
+                    side: BorderSide(
+                      color: isSelected
+                          ? HomePalette.accent.withValues(alpha: 0.45)
+                          : palette.line,
+                      width: 0.5,
+                    ),
+                    backgroundColor: palette.surface,
+                    selectedColor: HomePalette.accent.withValues(
+                      alpha: palette.dark ? 0.2 : 0.12,
+                    ),
+                    labelStyle: TextStyle(
+                      fontSize: 12.5,
+                      fontWeight: isSelected
+                          ? FontWeight.w700
+                          : FontWeight.w500,
+                      color: isSelected ? palette.accentText : palette.ink,
+                    ),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 6,
+                      vertical: 2,
+                    ),
+                  ),
+                );
+              }),
             ),
+          ),
+          if (!_showSuggestions) _resultControls(context),
           if (_idQuery != null)
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -609,7 +659,8 @@ class _SearchPageState extends State<SearchPage> {
         ),
       );
     }
-    if (feed.items.isEmpty) {
+    final items = feed.items.where(_matchesScore).toList(growable: false);
+    if (items.isEmpty) {
       return Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -619,15 +670,76 @@ class _SearchPageState extends State<SearchPage> {
                   ? (_feeds.first.items.isEmpty
                         ? '未找到该 ID 对应的作品'
                         : '该分类下没有匹配的作品')
-                  : (feed.hasMore ? '当前页暂无匹配结果' : '无结果'),
+                  : (_minimumScore > 0
+                        ? '已加载结果中暂无达到评分的作品'
+                        : (feed.hasMore ? '当前页暂无匹配结果' : '无结果')),
             ),
+            if (_idQuery == null && _minimumScore > 0)
+              TextButton(
+                onPressed: () => setState(() => _minimumScore = 0),
+                child: const Text('清除评分筛选'),
+              ),
             if (feed.hasMore || feed.loading || feed.error != null)
               _paginationFooter(context, feed),
           ],
         ),
       );
     }
-    return _resultGrid(context, feed);
+    return _resultItems(context, feed, items);
+  }
+
+  // Note: 小说来源、评分范围与分页见 .agents/notes/implemented/feature/2026-10-15-search-filters-and-list.md
+  Widget _resultControls(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: DropdownButton<double>(
+                  key: const Key('search-minimum-score'),
+                  value: _idQuery != null ? 0 : _minimumScore,
+                  isExpanded: true,
+                  underline: const SizedBox.shrink(),
+                  items: const [
+                    DropdownMenuItem(value: 0, child: Text('评分不限')),
+                    DropdownMenuItem(value: 8, child: Text('8 分及以上')),
+                    DropdownMenuItem(value: 9, child: Text('9 分及以上')),
+                  ],
+                  onChanged: _idQuery != null
+                      ? null
+                      : (value) {
+                          if (value != null) {
+                            setState(() => _minimumScore = value);
+                          }
+                        },
+                ),
+              ),
+              const SizedBox(width: 12),
+              IconButton(
+                key: const Key('search-layout-toggle'),
+                tooltip: _listView ? '切换为封面视图' : '切换为无封面列表',
+                onPressed: _toggleLayout,
+                icon: Icon(_listView ? Icons.grid_view : Icons.view_list),
+              ),
+            ],
+          ),
+          if (_idQuery == null && _minimumScore > 0)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Text(
+                '筛选已加载结果，未评分作品不计入；可继续加载更多。',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: HomePalette.of(context).muted,
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
   }
 
   Widget _historyView(BuildContext context) {
@@ -646,13 +758,12 @@ class _SearchPageState extends State<SearchPage> {
           decoration: BoxDecoration(
             color: palette.surface,
             borderRadius: BorderRadius.circular(20),
-            border: Border.all(
-              color: palette.line,
-              width: 0.6,
-            ),
+            border: Border.all(color: palette.line, width: 0.6),
             boxShadow: [
               BoxShadow(
-                color: palette.ink.withValues(alpha: palette.dark ? 0.12 : 0.03),
+                color: palette.ink.withValues(
+                  alpha: palette.dark ? 0.12 : 0.03,
+                ),
                 blurRadius: 8,
                 offset: const Offset(0, 2),
               ),
@@ -669,7 +780,11 @@ class _SearchPageState extends State<SearchPage> {
                       color: palette.soft,
                       borderRadius: BorderRadius.circular(8),
                     ),
-                    child: Icon(LucideIcons.clock, size: 15, color: palette.muted),
+                    child: Icon(
+                      LucideIcons.clock,
+                      size: 15,
+                      color: palette.muted,
+                    ),
                   ),
                   const SizedBox(width: 8),
                   Expanded(
@@ -685,13 +800,14 @@ class _SearchPageState extends State<SearchPage> {
                   if (_history.isNotEmpty)
                     TextButton.icon(
                       onPressed: _confirmClearHistory,
-                      icon: Icon(LucideIcons.trash, size: 15, color: palette.muted),
+                      icon: Icon(
+                        LucideIcons.trash,
+                        size: 15,
+                        color: palette.muted,
+                      ),
                       label: Text(
                         '清空',
-                        style: TextStyle(
-                          fontSize: 13,
-                          color: palette.muted,
-                        ),
+                        style: TextStyle(fontSize: 13, color: palette.muted),
                       ),
                     ),
                 ],
@@ -716,16 +832,21 @@ class _SearchPageState extends State<SearchPage> {
                     for (final query in visible)
                       InputChip(
                         label: Text(query),
-                        avatar: Icon(LucideIcons.clock, size: 14, color: palette.muted),
+                        avatar: Icon(
+                          LucideIcons.clock,
+                          size: 14,
+                          color: palette.muted,
+                        ),
                         onPressed: () => _search(query),
                         onDeleted: () => _removeHistory(query),
                         deleteButtonTooltipMessage: '删除 $query',
-                        deleteIcon: Icon(LucideIcons.x, size: 14, color: palette.muted),
-                        backgroundColor: palette.soft,
-                        side: BorderSide(
-                          color: palette.line,
-                          width: 0.5,
+                        deleteIcon: Icon(
+                          LucideIcons.x,
+                          size: 14,
+                          color: palette.muted,
                         ),
+                        backgroundColor: palette.soft,
+                        side: BorderSide(color: palette.line, width: 0.5),
                         shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(16),
                         ),
@@ -757,25 +878,81 @@ class _SearchPageState extends State<SearchPage> {
     );
   }
 
-  Widget _resultGrid(BuildContext context, _SearchFeed feed) {
+  Widget _resultItems(
+    BuildContext context,
+    _SearchFeed feed,
+    List<MediaItem> items,
+  ) {
     return CustomScrollView(
-      key: ValueKey((_requestGeneration, _tabIndex)),
+      key: ValueKey((_requestGeneration, _tabIndex, _minimumScore, _listView)),
       controller: _scrollController,
       keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
       slivers: [
         SliverPadding(
           padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
-          sliver: SliverGrid(
-            gridDelegate: mediaGridDelegateFor(context),
-            delegate: SliverChildBuilderDelegate((context, i) {
-              final item = feed.items[i];
-              return MediaCard(item: item, onTap: () => _openItem(item));
-            }, childCount: feed.items.length),
-          ),
+          sliver: _listView
+              ? SliverList.builder(
+                  itemCount: items.length,
+                  itemBuilder: (context, i) => _resultRow(context, items[i]),
+                )
+              : SliverGrid(
+                  gridDelegate: mediaGridDelegateFor(context),
+                  delegate: SliverChildBuilderDelegate((context, i) {
+                    final item = items[i];
+                    return MediaCard(
+                      item: item,
+                      showScore: true,
+                      onTap: () => _openItem(item),
+                    );
+                  }, childCount: items.length),
+                ),
         ),
         if (_idQuery == null)
           SliverToBoxAdapter(child: _paginationFooter(context, feed)),
       ],
+    );
+  }
+
+  Widget _resultRow(BuildContext context, MediaItem item) {
+    final palette = HomePalette.of(context);
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: () => _openItem(item),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 14),
+          decoration: BoxDecoration(
+            border: Border(bottom: BorderSide(color: palette.line, width: 0.5)),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                item.title,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: palette.ink,
+                  fontSize: 15,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                [
+                  if (item.author.isNotEmpty) item.author,
+                  kindLabels[item.kind] ?? item.kind,
+                  if (item.score != null)
+                    '${item.score!.toStringAsFixed(1)}分'
+                  else
+                    '暂无评分',
+                ].join(' · '),
+                style: TextStyle(color: palette.muted, fontSize: 12),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 
@@ -825,6 +1002,7 @@ class _SearchPageState extends State<SearchPage> {
   void _selectTab(int index) {
     if (index == _tabIndex) return;
     setState(() => _tabIndex = index);
+    if (_query.isEmpty) return;
     final feed = _feeds[index];
     if (!feed.initialized && feed.error == null) {
       _loadTab(index);
@@ -843,6 +1021,7 @@ class _SearchPageState extends State<SearchPage> {
 
 enum _SearchCategory {
   general('综合', 1),
+  book('小说', 3, 'book'),
   video('短剧', 11, 'video'),
   manju('漫剧', 11, 'manju'),
   manga('漫画', 8, 'manga'),
@@ -854,7 +1033,11 @@ enum _SearchCategory {
   final int tabType;
   final String? kind;
 
-  String get sourceTitle => this == manju ? '短剧' : title;
+  String get sourceTitle => switch (this) {
+    book => '书籍',
+    manju => '短剧',
+    _ => title,
+  };
 }
 
 class _SearchFeed {

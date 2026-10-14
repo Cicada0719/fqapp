@@ -6,6 +6,59 @@ import 'package:fqapp/models/media_item.dart';
 import 'package:fqapp/services/chapter_cache_store.dart';
 
 void main() {
+  test('book search selects tab 3 and keeps the nested rating and cursor', () {
+    final tabs = parseSearchTabs({
+      'search_tabs': [
+        {
+          'tab_type': 1,
+          'title': '综合',
+          'data': [
+            {'book_id': 'other', 'book_name': '综合结果', 'score': '9.9'},
+          ],
+        },
+        {
+          'tab_type': 3,
+          'title': '书籍',
+          'has_more': true,
+          'next_offset': 14,
+          'data': [
+            {
+              'book_data': [
+                {'book_id': 'novel', 'book_name': '小说结果', 'score': '9.3'},
+              ],
+            },
+          ],
+        },
+      ],
+    }, tabType: 3);
+    final tab = tabs.single;
+    expect(tab.title, '书籍');
+    expect(tab.hasMore, isTrue);
+    expect(tab.nextOffset, 14);
+    expect(tab.items.single.id, 'novel');
+    expect(tab.items.single.score, 9.3);
+    expect(tab.items.single.copyWith(title: '新标题').score, 9.3);
+    expect(MediaItemJson.fromJson(tab.items.single.toJson())!.score, 9.3);
+  });
+
+  test('missing and non-rating scores remain unknown', () {
+    for (final raw in [null, '', '暂无评分', 0, -1, 11, 'NaN', 'Infinity']) {
+      expect(
+        MediaItem.fromRaw({'book_id': 'book', 'score': raw}).score,
+        isNull,
+      );
+    }
+    expect(MediaItem.fromRaw({'book_id': 'book', 'score': 8.8}).score, 8.8);
+    expect(MediaItem.fromRaw({'book_id': 'book', 'score': '10.0'}).score, 10);
+    expect(
+      MediaItem.fromRaw({
+        'score': 9.9,
+        'book_data': {'book_id': 'book', 'score': 0},
+      }).score,
+      isNull,
+    );
+  });
+
   test('parses list-shaped chapterListWithVolume', () {
     final payload = {
       'code': 200,
@@ -121,11 +174,7 @@ void main() {
           'data': {
             'chapterListWithVolume': [
               [
-                {
-                  'itemId': 'c1',
-                  'title': '第1章',
-                  'volume_name': '第一卷：默认',
-                },
+                {'itemId': 'c1', 'title': '第1章', 'volume_name': '第一卷：默认'},
               ],
             ],
           },
@@ -726,16 +775,8 @@ void main() {
                     'followed_cnt': 687558,
                     'episode_cnt': 153,
                     'secondary_infos': [
-                      {
-                        'can_click': true,
-                        'content': '都市日常',
-                        'data_type': 3,
-                      },
-                      {
-                        'can_click': true,
-                        'content': '演员·萨钢云',
-                        'data_type': 23,
-                      },
+                      {'can_click': true, 'content': '都市日常', 'data_type': 3},
+                      {'can_click': true, 'content': '演员·萨钢云', 'data_type': 23},
                     ],
                   },
                 },
