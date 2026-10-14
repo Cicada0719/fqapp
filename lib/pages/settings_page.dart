@@ -16,6 +16,7 @@ import '../widgets/home/home_design.dart';
 import 'about_page.dart';
 import 'cached_books_page.dart';
 import 'cached_dramas_page.dart';
+import 'library_backup_page.dart';
 import 'log_viewer_page.dart';
 import 'settings_category_page.dart';
 
@@ -57,8 +58,17 @@ class SettingsPage extends StatelessWidget {
       SettingsCategory(
         icon: LucideIcons.database,
         title: '数据',
-        subtitle: '章节缓存、离线缓存、阅读与播放历史',
+        subtitle: '备份与恢复、缓存、阅读与播放历史',
         items: [
+          SettingsItem(
+            icon: LucideIcons.database,
+            title: '备份与恢复',
+            subtitle: '导出收藏和进度，迁移到另一台手机',
+            onTap: (context, setState) => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const LibraryBackupPage()),
+            ),
+          ),
           SettingsItem(
             icon: LucideIcons.book_marked,
             title: '章节缓存',

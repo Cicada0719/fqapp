@@ -141,6 +141,31 @@ class ShelfStore {
     _revision.value++;
   }
 
+  /// The check and putAll are synchronous up to the first await, so another
+  /// shelf action cannot slip between the check and Hive's in-memory update.
+  Future<int> mergeBackup(Iterable<ShelfRecord> records) async {
+    final box = _openBox;
+    if (box == null) throw StateError('书架尚未初始化');
+    final missing = {
+      for (final record in records)
+        if (!box.containsKey(keyOf(record.item)))
+          keyOf(record.item): _recordOf(record.item, record.addedAt),
+    };
+    if (missing.isEmpty) {
+      // A retry after a failed flush must still retry durable persistence.
+      await box.flush();
+      return 0;
+    }
+    try {
+      await box.putAll(missing);
+      await box.flush();
+    } finally {
+      // A failed disk write can still have changed part of the visible box.
+      _revision.value++;
+    }
+    return missing.length;
+  }
+
   static Map<String, dynamic> _recordOf(MediaItem item, DateTime addedAt) => {
     'id': item.id,
     'kind': item.kind,

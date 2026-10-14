@@ -303,6 +303,85 @@ class LibraryStore implements ReaderStore {
 
   Future<List<Map<String, dynamic>>> history() async => historySnapshot();
 
+  /// Queue the snapshot behind saves already submitted to the store.
+  Future<
+    ({
+      List<Map<String, dynamic>> history,
+      Map<String, Map<String, int>> watched,
+    })
+  >
+  backupSnapshot() => _serializeResult(
+    () async => (
+      history: historySnapshot(),
+      watched: {
+        for (final key in _watchedBox.keys)
+          key.toString(): _watchedRecord(_watchedBox.get(key)),
+      },
+    ),
+  );
+
+  /// Imports validated content IDs, keeping every existing local record.
+  /// Do not call addHistory here: its normal retention sweep would delete
+  /// local entries midway through restoring a larger backup.
+  Future<({int history, int episodes})> mergeBackup({
+    required List<Map<String, dynamic>> history,
+    required Map<String, Map<String, int>> watched,
+  }) {
+    final guard = ReadingDataWriteGuard(this);
+    return _serializeResult(() async {
+      if (!guard.canWriteHistory) throw StateError('历史已清理，请重新导入');
+      final identities = historySnapshot().map(_historyIdentity).toSet();
+      var addedHistory = 0;
+      for (final entry in history) {
+        final kind = entry['kind'] as String;
+        final id = entry['id'] as String;
+        final scoped = kind == 'audio' || kind == 'manga';
+        final key = scoped ? '$kind:$id' : id;
+        // Bare video/book keys may also be occupied by another kind. Do not
+        // overwrite it or invoke legacy statistics migration during restore.
+        if (identities.contains((kind, id)) || _histBox.containsKey(key)) {
+          continue;
+        }
+        await _histBox.put(key, {
+          ...entry,
+          'id': key,
+          if (scoped) 'contentId': id,
+        });
+        identities.add((kind, id));
+        addedHistory++;
+      }
+      var addedEpisodes = 0;
+      for (final entry in watched.entries) {
+        final current = _watchedRecord(_watchedBox.get(entry.key));
+        final missing = {
+          for (final episode in entry.value.entries)
+            if (!current.containsKey(episode.key)) episode.key: episode.value,
+        };
+        if (missing.isEmpty) continue;
+        await _watchedBox.put(entry.key, {...current, ...missing});
+        addedEpisodes += missing.length;
+      }
+      await _histBox.flush();
+      await _watchedBox.flush();
+      return (history: addedHistory, episodes: addedEpisodes);
+    });
+  }
+
+  static Map<String, int> _watchedRecord(dynamic raw) {
+    if (raw is List) return {for (final id in raw) id.toString(): 0};
+    if (raw is! Map) return {};
+    return {
+      for (final entry in raw.entries)
+        entry.key.toString():
+            entry.value is num &&
+                (entry.value as num).isFinite &&
+                (entry.value as num) >= 0 &&
+                (entry.value as num) <= 8640000000000000
+            ? (entry.value as num).toInt()
+            : 0,
+    };
+  }
+
   @override
   Future<Map<String, dynamic>?> historyEntry(String id) async {
     final entry = _histBox.get(id);
