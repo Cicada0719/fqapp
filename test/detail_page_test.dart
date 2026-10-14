@@ -537,6 +537,86 @@ void main() {
     expect(find.text('下载'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('autoOpenReader opens the reader directly for books', (
+    tester,
+  ) async {
+    addTearDown(() => tester.pumpWidget(const SizedBox.shrink()));
+    final observer = _RouteObserver();
+    await tester.pumpWidget(
+      MaterialApp(
+        navigatorObservers: [observer],
+        home: DetailPage(
+          item: _book,
+          autoOpenReader: true,
+          detailLoader: (id, {String tab = '小说'}) async => {},
+          directoryLoader: (id, {String tab = '小说'}) async => [_chapters],
+          readerStore: MemoryReaderStore(),
+          // The auto-opened reader mounts for real: a memory cache keeps
+          // its chapter load off Hive (uninitialized in tests).
+          chapterCache: MemoryChapterCache(),
+        ),
+      ),
+    );
+    // Flush the detail load + the auto-open replacement. Each pump advances
+    // the fake clock so the replacement route's transition finishes; the
+    // reader's own chapter load fails into its error view (live API here).
+    for (
+      var i = 0;
+      i < 20 && find.byType(DetailPage).evaluate().isNotEmpty;
+      i++
+    ) {
+      await tester.pump(const Duration(milliseconds: 100));
+      await tester.idle();
+    }
+    expect(find.byType(ReaderPage), findsOneWidget);
+    expect(find.byType(DetailPage), findsNothing);
+    final context = tester.element(find.byType(ReaderPage));
+    final page =
+        (observer.lastRoute! as MaterialPageRoute).builder(context)
+            as ReaderPage;
+    expect(page.bookId, 'book');
+    expect(page.startIndex, 0);
+    expect(page.chapters.length, 2);
+  });
+
+  testWidgets('autoOpenReader stays on detail for audio and empty catalogues', (
+    tester,
+  ) async {
+    addTearDown(() => tester.pumpWidget(const SizedBox.shrink()));
+    await tester.pumpWidget(
+      MaterialApp(
+        home: DetailPage(
+          item: _item('audio'),
+          autoOpenReader: true,
+          detailLoader: (id, {String tab = '小说'}) async => {},
+          directoryLoader: (id, {String tab = '小说'}) async => [_chapters],
+          readerStore: MemoryReaderStore(),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byType(DetailPage), findsOneWidget);
+    expect(find.byType(AudioPage), findsNothing);
+    expect(find.byType(ReaderPage), findsNothing);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: DetailPage(
+          item: _book,
+          autoOpenReader: true,
+          detailLoader: (id, {String tab = '小说'}) async => {},
+          directoryLoader: (id, {String tab = '小说'}) async =>
+              const <List<Chapter>>[],
+          readerStore: MemoryReaderStore(),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byType(DetailPage), findsOneWidget);
+    expect(find.byType(ReaderPage), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
 }
 
 final _book = MediaItem(
@@ -571,6 +651,12 @@ class _RouteObserver extends NavigatorObserver {
   void didPush(Route<dynamic> route, Route<dynamic>? previousRoute) {
     pushes++;
     lastRoute = route;
+  }
+
+  @override
+  void didReplace({Route<dynamic>? newRoute, Route<dynamic>? oldRoute}) {
+    // pushReplacement (direct reader) swaps the route without a push.
+    if (newRoute != null) lastRoute = newRoute;
   }
 }
 

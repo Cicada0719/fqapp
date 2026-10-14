@@ -8,6 +8,7 @@ import '../models/book_comment.dart';
 import '../models/chapter_ideas.dart';
 import '../models/media_item.dart';
 import '../services/api_client.dart';
+import '../services/app_theme.dart';
 import '../services/backend_transport.dart';
 import '../services/chapter_cache_store.dart';
 import '../services/chapter_text_formatter.dart';
@@ -100,6 +101,10 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
   final ScrollController _scrollController = ScrollController();
   Timer? _saveTimer;
 
+  /// 滚动模式下底部拖过边界的累计量：超过阈值才触发连续阅读进下一章，
+  /// 避免轻微回弹误触（与分页视图的 32px 边界阈值一致）。
+  double _scrollOverscroll = 0;
+
   /// In-flight chapter fetch. Switching chapters or leaving the reader cancels
   /// it, so a slow chapter cannot keep the upstream request alive.
   BackendRequest? _chapterRequest;
@@ -122,6 +127,12 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
   Timer? _autoTurnTimer;
 
   bool get _paged => _preferences.pageMode == ReaderPageMode.paged;
+
+  /// 全局墨水屏模式覆盖阅读器显示预设（#15/#9）：开启时阅读器强制纯黑白，
+  /// 不改用户保存的预设，关闭后恢复原预设。夜间切换等仍写保存的预设。
+  ReaderThemePreset get _effectivePreset => einkModeNotifier.value
+      ? ReaderThemePreset.eink
+      : _preferences.themePreset;
 
   bool _handleVolumeKey(KeyEvent event) {
     if (!mounted ||
@@ -1048,7 +1059,7 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
       MediaQuery.textScalerOf(context).scale(_preferences.fontSize),
       variant: variant,
     ),
-    preset: _preferences.themePreset,
+    preset: _effectivePreset,
     onTap: () => unawaited(_showIdeas(focusParaIndex: paraIndex)),
   );
 
@@ -1062,8 +1073,8 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
       isScrollControlled: true,
       useSafeArea: true,
       showDragHandle: false,
-      backgroundColor: _preferences.themePreset.isDark
-          ? _preferences.themePreset.panelColor
+      backgroundColor: _effectivePreset.isDark
+          ? _effectivePreset.panelColor
           : Colors.white,
       barrierColor: Colors.black.withValues(alpha: 0.4),
       shape: const RoundedRectangleBorder(
@@ -1076,7 +1087,7 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
         heightFactor: 0.69,
         child: ReaderIdeasSheet(
           ideas: ideaSnapshot,
-          preset: _preferences.themePreset,
+          preset: _effectivePreset,
           // Each bubble opens only that paragraph's comments.
           initialParaIndex: focusParaIndex,
           loadComments: (paragraph, cursor) async {
@@ -1684,6 +1695,7 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
       ),
       builder: (context) => ReaderAppearanceSheet(
         initialValue: _preferences,
+        einkOverride: einkModeNotifier.value,
         onChanged: _previewPreferences,
         onPickFont: _pickFont,
       ),
@@ -1692,6 +1704,11 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
   }
 
   void _toggleNightTheme() {
+    // 全局墨水屏覆盖显示，点夜间不会有任何可见变化，先提示而非静默无响应。
+    if (einkModeNotifier.value) {
+      _showMessage('全局墨水屏模式已开启，先在设置里关闭它再切换夜间');
+      return;
+    }
     final nextPreset = _preferences.themePreset == ReaderThemePreset.dark
         ? _dayTheme
         : ReaderThemePreset.dark;
@@ -1711,9 +1728,9 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
       isScrollControlled: true,
       useSafeArea: true,
       showDragHandle: true,
-      backgroundColor: _preferences.themePreset.panelColor,
+      backgroundColor: _effectivePreset.panelColor,
       builder: (context) => Theme(
-        data: _preferences.themePreset.theme(Theme.of(context)),
+        data: _effectivePreset.theme(Theme.of(context)),
         child: Padding(
           padding: EdgeInsets.only(
             bottom: MediaQuery.viewInsetsOf(context).bottom,
@@ -1836,9 +1853,9 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
       isScrollControlled: true,
       useSafeArea: true,
       showDragHandle: true,
-      backgroundColor: _preferences.themePreset.panelColor,
+      backgroundColor: _effectivePreset.panelColor,
       builder: (context) => Theme(
-        data: _preferences.themePreset.theme(Theme.of(context)),
+        data: _effectivePreset.theme(Theme.of(context)),
         child: ChapterCacheSheet(
           book: _cachedBook,
           currentIndex: _index,
@@ -1858,7 +1875,7 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
         body: _errorView(),
       );
     }
-    final preset = _preferences.themePreset;
+    final preset = _effectivePreset;
     final windowPadding = MediaQuery.paddingOf(context);
     final overlayStyle = preset.isDark
         ? SystemUiOverlayStyle.light
@@ -2100,6 +2117,8 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
                         backgroundColor: preset.backgroundColor,
                         endPage: _buildChapterEndPage(preset),
                         startPage: _buildChapterStartPage(preset),
+                        autoAdvanceBoundary:
+                            _preferences.continuousReading,
                         onBoundaryLanded: (direction) {
                           // _pageIndex never reports boundary pages, so the book end
                           // stops auto turn from here.
@@ -2390,14 +2409,38 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
     // it. Its size still depends on this list's own constraints, and the
     // painter's placeholder was measured at spec.width — the same width, so the
     // two agree without a second measurement pass.
-    return NotificationListener<ScrollStartNotification>(
+    return NotificationListener<ScrollNotification>(
       onNotification: (notification) {
-        if (notification.dragDetails != null) {
-          // Scrolling away cancels the selection (the official client keeps
-          // it and repositions its toolbar after the scroll settles; here one
-          // long press reselects instead).
-          _closeSelectionBar(clearSelection: true);
-          _hideControlsOnDrag();
+        if (notification.depth != 0) return false;
+        if (notification is ScrollStartNotification) {
+          // A new drag resets the bottom-overscroll accumulator, so only
+          // one continuous-reading advance fires per drag past the end.
+          _scrollOverscroll = 0;
+          if (notification.dragDetails != null) {
+            // Scrolling away cancels the selection (the official client keeps
+            // it and repositions its toolbar after the scroll settles; here one
+            // long press reselects instead).
+            _closeSelectionBar(clearSelection: true);
+            _hideControlsOnDrag();
+          }
+          return false;
+        }
+        if (notification is OverscrollNotification &&
+            notification.dragDetails != null &&
+            // Trailing-edge overscroll only: dragging past the bottom.
+            // (Leading-edge overscroll is negative and must not advance.)
+            notification.overscroll > 0 &&
+            _preferences.continuousReading &&
+            !_changingChapter &&
+            !_loading &&
+            _index < widget.chapters.length - 1) {
+          // 连续阅读：滚动到底后继续往下拉，把下一章接上，不用点章末的
+          // 「下一章」按钮。章末按钮行仍在，点它一样能进下一章/看评论。
+          _scrollOverscroll += notification.overscroll;
+          if (_scrollOverscroll > 32) {
+            _scrollOverscroll = 0;
+            unawaited(_next());
+          }
         }
         return false;
       },

@@ -18,7 +18,7 @@ import '../services/watched_episodes.dart' show WatchedEpisodes, watchedIndexes;
 import '../widgets/player/playlet_comment_panel.dart';
 import '../widgets/player/story_player_panel.dart'
     show SeriesStatus, episodeTileLabel;
-import 'detail_page.dart' show DetailPage;
+import 'detail_page.dart' show openBookDetail;
 import 'player_page.dart' show PlayerPage;
 
 /// 短剧详情：保留官方深色主题与区块顺序，提供本地续播、收藏和局部重试。
@@ -538,20 +538,16 @@ class _SeriesDetailPageState extends State<SeriesDetailPage> {
 
   void _openOriginalBook(SeriesRelateBook book) {
     unawaited(
-      Navigator.push(
+      openBookDetail(
         context,
-        MaterialPageRoute<void>(
-          builder: (_) => DetailPage(
-            item: MediaItem(
-              id: book.id,
-              title: book.title,
-              cover: book.cover,
-              author: '',
-              badge: '原著小说',
-              ep: '',
-              kind: 'book',
-            ),
-          ),
+        MediaItem(
+          id: book.id,
+          title: book.title,
+          cover: book.cover,
+          author: '',
+          badge: '原著小说',
+          ep: '',
+          kind: 'book',
         ),
       ),
     );
