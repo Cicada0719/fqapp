@@ -485,9 +485,8 @@ class NativePlayerPlugin internal constructor(
                     // Media3 reports display width/height after rotation. Its
                     // ImageReader output still needs the format rotation in
                     // Flutter; SurfaceTexture producers already apply it.
-                    val rotation = instance.videoOutput.rotationCorrection(
-                        player.videoFormat?.rotationDegrees ?: 0
-                    )
+                    val formatRotation = player.videoFormat?.rotationDegrees ?: 0
+                    val rotation = instance.videoOutput.rotationCorrection(formatRotation)
                     handler.post {
                         if (!attachedToEngine || players[playerId] !== instance) return@post
                         eventSink?.success(mapOf(
@@ -495,7 +494,12 @@ class NativePlayerPlugin internal constructor(
                             "type" to "videoSize",
                             "width" to videoSize.width,
                             "height" to videoSize.height,
-                            "rotationCorrection" to rotation
+                            "rotationCorrection" to rotation,
+                            // 诊断（issue #11）：区分「producer 已代理旋转」与
+                            // 「需要 Flutter 自己转」两条路径，避免靠猜。
+                            "formatRotation" to formatRotation,
+                            "handlesCropAndRotation" to
+                                instance.videoOutput.handlesCropAndRotation()
                         ))
                     }
                 }

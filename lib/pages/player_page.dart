@@ -1052,6 +1052,15 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       if (!_current(generation)) return;
       final fresh = candidate = widget.playerFactory?.call() ?? NativePlayer();
       _player = fresh;
+      // `_teardownPlayer` 把 `_activeIndex` 一并清空了，换档换的是同一集的
+      // 另一路流，所以必须补回来：它为 null 时 `enabled`（下传给 chrome）
+      // 恒假，chrome 的 `_ready` 随之恒假，于是①单击画面不再切播放/暂停
+      // （`_togglePlayback` 的 `!_ready` 早退）②`fitVideo` 落到 viewport
+      // 而不是按源尺寸算出的 `layout.video`，画面被拉满整屏——换档后画面
+      // 拉伸与点击失效是同一个真因，直到换集才会恢复。
+      // Note: 换档清空 `_activeIndex` 引发的四个后果与本位置的取值依据 —
+      // 见 .agents/notes/implemented/bug-fix/2026-10-14-quality-switch-clears-active-index.md
+      _activeIndex = _index;
       await fresh.create(variant.url, variant.keyHex);
       if (!_current(generation, fresh)) {
         await fresh.dispose();

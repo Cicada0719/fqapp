@@ -38,6 +38,9 @@ internal class NativeVideoOutput(
             formatRotationDegrees in listOf(90, 180, 270)
         ) formatRotationDegrees else 0
 
+    /** 诊断用：producer 是否已代劳裁剪与旋转（决定上面那条分支）。 */
+    fun handlesCropAndRotation(): Boolean = producer.handlesCropAndRotation()
+
     fun release() {
         if (released) return
         released = true

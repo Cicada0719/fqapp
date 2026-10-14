@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:flutter/services.dart';
 
+import 'app_log.dart';
+
 class NativePlaybackException implements Exception {
   final String message;
   final int? errorCode;
@@ -485,6 +487,16 @@ class NativePlayer {
               rotation is num && const [90, 180, 270].contains(rotation)
               ? rotation.toInt()
               : 0;
+          // 诊断：issue #11 竖版源在换档后被塞进横向盒子导致拉伸。这里把
+          // 原生上报的原始字段全量抛出，用来区分「尺寸本身是编码尺寸」还是
+          // 「布局/旋转约定不一致」。
+          AppLog.d(
+            'video-size',
+            'w=$_videoWidth h=$_videoHeight rawRotation=$rotation '
+                'applied=$_videoRotationCorrection '
+                'formatRotation=${event['formatRotation']} '
+                'producerHandles=${event['handlesCropAndRotation']}',
+          );
           _videoSizeCtrl.add(Size(width.toDouble(), height.toDouble()));
         }
     }
