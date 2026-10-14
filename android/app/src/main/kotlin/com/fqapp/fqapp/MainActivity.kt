@@ -2,8 +2,15 @@ package com.fqapp.fqapp
 
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.embedding.engine.FlutterShellArgs
 
 class MainActivity : FlutterActivity() {
+    override fun getFlutterShellArgs(): FlutterShellArgs = super.getFlutterShellArgs().also {
+        // Runs before the engine/FlutterLoader starts; configureFlutterEngine is
+        // too late to select the process-wide rendering backend.
+        RendererCompatibility.configure(it)
+    }
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 

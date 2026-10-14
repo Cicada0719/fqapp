@@ -474,6 +474,7 @@ App 主要通过 `ApiClient` 调用后端 **`/api/*` 桥接层**（Rust 核心 `
 ### 播放器（`player_page.dart`）
 - 短剧与漫剧共享播放器；漫剧保留独立历史类型，并兼容以前按短剧保存的系列和播放位置
 - 原生 Media3 播放器播放后端返回的流地址（客户端自动补全 URL）
+- MT6895 / 天玑 8100 设备在 Flutter 引擎启动前关闭 Impeller，使用 Skia/OpenGL ES 兼容视频纹理；其他芯片保留默认渲染策略。此策略不关闭 Media3 硬件解码，也不更换 SurfaceProducer。冷启动 logcat 中 `FqRenderer` 的 `policy=skia-opengles` 表示已应用启动参数，实际花屏是否消失仍需设备验收。实现入口为 `MainActivity.getFlutterShellArgs()` 和 `RendererCompatibility.kt`。
 - 自动连播（播完自动下一集）
 - 控制栏三秒后自动隐藏；单击显示或隐藏，双击播放或暂停
 - 支持搜索选集、上下集、快进快退 10 秒和全屏
