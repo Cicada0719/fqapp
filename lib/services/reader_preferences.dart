@@ -70,9 +70,8 @@ class ReaderPreferences {
   /// playback (听书跟随翻页).
   final bool listeningFollow;
 
-  /// 连续阅读：滚动到底继续下拉自动进入下一章，不用点章末的「下一章」按钮；
-  /// 分页模式下章末页停靠 600ms 后自动进下一章。关掉则章末停住，等用户点
-  /// 按钮或主动翻页。默认开：滚动模式下这是主流阅读器的行为。
+  /// 滚动模式连续阅读：到底继续下拉进入下一章。默认开启。
+  /// 普通分页始终直接跨章，不受这个滚动手势开关影响。
   final bool continuousReading;
 
   const ReaderPreferences({

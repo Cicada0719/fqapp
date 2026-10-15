@@ -129,15 +129,11 @@ void main() {
       expect(_pager(tester).pageIndex, _pager(tester).layout.pages.length - 1);
       final loaded = requests;
       await _swipe(tester, 1);
-      // The boundary page defers the chapter swap briefly so its 章末 buttons
-      // stay tappable; give the fake clock that window.
-      await tester.pump(const Duration(milliseconds: 700));
-      await tester.pumpAndSettle();
+      expect(find.text('本章完'), findsNothing);
       expect(store.entry?['chapterId'], 'chapter-2');
       expect(_pager(tester).pageIndex, 0);
       await _swipe(tester, -1);
-      await tester.pump(const Duration(milliseconds: 700));
-      await tester.pumpAndSettle();
+      expect(find.text('本章完'), findsNothing);
       expect(store.entry?['chapterId'], 'chapter-1');
       expect(_pager(tester).pageIndex, _pager(tester).layout.pages.length - 1);
       expect(
@@ -148,6 +144,50 @@ void main() {
       await tester.pumpWidget(const SizedBox.shrink());
     },
   );
+
+  for (final style in ReaderPageTurnStyle.values) {
+    testWidgets(
+      'one tap crosses chapters with ${style.name}, even with continuous reading off',
+      (tester) async {
+        SharedPreferences.setMockInitialValues({
+          'reader_page_turn_style': style.name,
+          'reader_continuous_reading': false,
+        });
+        await _size(tester, const Size(390, 760));
+        final store = MemoryReaderStore(
+          entry: {
+            'id': 'paged-book',
+            'kind': 'book',
+            'chapterId': 'chapter-1',
+            'positionVersion': 2,
+            'textOffset': 1000000,
+          },
+        );
+        await tester.pumpWidget(_app(store: store));
+        await tester.pumpAndSettle();
+        expect(
+          _pager(tester).pageIndex,
+          _pager(tester).layout.pages.length - 1,
+        );
+        await _tapSide(tester, 1);
+        expect(find.text('本章完'), findsNothing);
+        expect(store.entry?['chapterId'], 'chapter-2');
+        expect(_pager(tester).pageIndex, 0);
+        var status = tester.widget<ReaderStatusBar>(
+          find.byType(ReaderStatusBar),
+        );
+        expect(status.chapterIndex, 1);
+        expect(status.pageIndex, 0);
+        await _tapSide(tester, -1);
+        expect(store.entry?['chapterId'], 'chapter-1');
+        status = tester.widget<ReaderStatusBar>(find.byType(ReaderStatusBar));
+        expect(status.chapterIndex, 0);
+        expect(status.pageIndex, status.pageCount! - 1);
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox.shrink());
+      },
+    );
+  }
 
   testWidgets(
     'failed previous chapter keeps history and retry still opens its end',
@@ -170,10 +210,6 @@ void main() {
       await tester.pumpAndSettle();
       final saved = Map<String, dynamic>.of(store.entry!);
       await _swipe(tester, -1);
-      // Boundary landing defers the previous-chapter request; see the swipe
-      // test above.
-      await tester.pump(const Duration(milliseconds: 700));
-      await tester.pumpAndSettle();
       expect(find.textContaining('上一章暂时不可用'), findsOneWidget);
       expect(store.entry?['chapterId'], saved['chapterId']);
       expect(store.entry?['textOffset'], saved['textOffset']);

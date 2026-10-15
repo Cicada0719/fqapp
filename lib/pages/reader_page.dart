@@ -2159,6 +2159,18 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
                 ],
               ),
             ),
+            if (!_loading &&
+                _error == null &&
+                _ideas.total > 0 &&
+                _chapterEndParagraph() != null)
+              IconButton(
+                key: const ValueKey('reader-toolbar-chapter-comments'),
+                tooltip: '本章评论',
+                onPressed: () => unawaited(
+                  _showIdeas(focusParaIndex: _chapterEndParagraph()),
+                ),
+                icon: Icon(LucideIcons.message_circle, color: preset.textColor),
+              ),
             IconButton(
               tooltip: '收起阅读菜单',
               onPressed: _toggleControls,
@@ -2230,18 +2242,10 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
                         onDragStart: _hideControlsOnDrag,
                         turnStyle: _preferences.pageTurnStyle,
                         backgroundColor: preset.backgroundColor,
-                        endPage: _buildChapterEndPage(preset),
-                        startPage: _buildChapterStartPage(preset),
-                        autoAdvanceBoundary:
-                            _preferences.continuousReading,
-                        onBoundaryLanded: (direction) {
-                          // _pageIndex never reports boundary pages, so the book end
-                          // stops auto turn from here.
-                          if (direction > 0 &&
-                              _index == widget.chapters.length - 1) {
-                            _stopAutoTurn();
-                          }
-                        },
+                        endPage: _index == widget.chapters.length - 1
+                            ? _buildChapterEndPage(preset)
+                            : null,
+                        onBookEnd: _stopAutoTurn,
                         imageProviderFactory: widget.imageProviderFactory,
                         onParagraphLongPress: (block, position) =>
                             unawaited(_onParagraphLongPress(block, position)),
@@ -2455,9 +2459,8 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
         selection.end == block.end;
   }
 
-  /// 章末页: shown as the trailing page of a finished chapter — the chapter's
-  /// comment entry (the ideas response's end bucket) plus the next-chapter
-  /// action, the official 章末章评 landing without its circle/ad modules.
+  /// The final chapter keeps a stable completion page. Other chapters go
+  /// directly to the next text page; their comments are in the reader toolbar.
   Widget _buildChapterEndPage(ReaderThemePreset preset) {
     final endBucket = _chapterEndParagraph();
     final commentCount = _ideas.total;
@@ -2479,30 +2482,11 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
                     unawaited(_showIdeas(focusParaIndex: endBucket)),
                 child: Text('查看本章评论 · $commentCount'),
               ),
-            const SizedBox(height: 12),
-            if (_index < widget.chapters.length - 1)
-              FilledButton(
-                onPressed: () => unawaited(_next()),
-                child: const Text('下一章'),
-              ),
           ],
         ),
       ),
     );
   }
-
-  /// 章首页: landing page for flipping backwards past the first page.
-  Widget _buildChapterStartPage(ReaderThemePreset preset) => ColoredBox(
-    color: preset.backgroundColor,
-    child: Center(
-      child: _index > 0
-          ? FilledButton(
-              onPressed: () => unawaited(_prev(startAtEnd: true)),
-              child: const Text('上一章'),
-            )
-          : null,
-    ),
-  );
 
   /// The chapter-end aggregate bucket: the ideas response's greatest paragraph
   /// key (e.g. para 10000), which the official client opens for 章末章评.

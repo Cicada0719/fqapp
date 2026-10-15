@@ -36,22 +36,15 @@ class ReaderPagedView extends StatefulWidget {
   final ReaderTextSelection? selection;
   final List<ReaderRangeUnderline> rangeUnderlines;
 
-  /// Page-turn animation; see [ReaderPageTurnStyle]. The widgets for the
-  /// boundary pages beyond the chapter (章末 / 上一章) are optional.
+  /// Page-turn animation; see [ReaderPageTurnStyle].
   final ReaderPageTurnStyle turnStyle;
   final Color backgroundColor;
+
+  /// Optional stop after the final chapter only. Between chapters, turning
+  /// past the last/first text page requests the next/previous chapter directly.
+  // Note: .agents/notes/implemented/bug-fix/2026-10-15-reader-chapter-turn.md
   final Widget? endPage;
-  final Widget? startPage;
-
-  /// Fired when a turn lands on a chapter boundary page (direction -1 start /
-  /// 1 end). The 章末页 is a stop point: the reader stops narration here while
-  /// the deferred advance below may still swap chapters.
-  final ValueChanged<int>? onBoundaryLanded;
-
-  /// 连续阅读：落在章末/章首页后 600ms 自动进下一章/上一章。关掉则停在
-  /// 边界页上，等用户点按钮或主动翻页（拖过边界的手势仍会进下一章）。
-  /// 默认 true，保持已有的分页行为。
-  final bool autoAdvanceBoundary;
+  final VoidCallback? onBookEnd;
 
   const ReaderPagedView({
     super.key,
@@ -65,9 +58,7 @@ class ReaderPagedView extends StatefulWidget {
     required this.turnStyle,
     required this.backgroundColor,
     this.endPage,
-    this.startPage,
-    this.onBoundaryLanded,
-    this.autoAdvanceBoundary = true,
+    this.onBookEnd,
     this.imageProviderFactory,
     this.onParagraphLongPress,
     this.onParagraphLongPressMoveUpdate,
@@ -84,64 +75,47 @@ class ReaderPagedView extends StatefulWidget {
 class ReaderPagedViewState extends State<ReaderPagedView> {
   late PageController _controller = _newController();
   bool _turning = false;
-  Timer? _boundaryLandingTimer;
   bool _boundaryPending = false;
   bool _edgeNotified = false;
   double _overscroll = 0;
+  int? _dragStartItem;
 
   double get _viewportWidth => _controller.position.viewportDimension > 0
       ? _controller.position.viewportDimension
       : 1;
 
-  int get _leading => widget.hasPreviousChapter ? 1 : 0;
-  int get _itemCount =>
-      widget.layout.pages.length +
-      _leading +
-      (widget.hasNextChapter || widget.endPage != null ? 1 : 0);
+  bool get _hasEndPage => !widget.hasNextChapter && widget.endPage != null;
+  int get _itemCount => widget.layout.pages.length + (_hasEndPage ? 1 : 0);
 
   bool get isAtEndPage =>
       _controller.hasClients &&
       (_controller.page ?? _controller.initialPage.toDouble()) >=
-          widget.layout.pages.length + _leading - .01;
+          widget.layout.pages.length - .01;
 
   PageController _newController() =>
-      PageController(initialPage: widget.pageIndex + _leading, keepPage: false);
+      PageController(initialPage: widget.pageIndex, keepPage: false);
 
   @override
   void didUpdateWidget(covariant ReaderPagedView oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (!identical(oldWidget.layout, widget.layout) ||
         oldWidget.hasPreviousChapter != widget.hasPreviousChapter ||
-        oldWidget.hasNextChapter != widget.hasNextChapter) {
-      _boundaryLandingTimer?.cancel();
+        oldWidget.hasNextChapter != widget.hasNextChapter ||
+        (oldWidget.endPage == null) != (widget.endPage == null)) {
       final oldController = _controller;
       _controller = _newController();
       _turning = false;
       _boundaryPending = false;
+      _dragStartItem = null;
       oldController.dispose();
     }
   }
 
   @override
   void dispose() {
-    _boundaryLandingTimer?.cancel();
     _controller.dispose();
     super.dispose();
   }
-
-  /// Cancels the deferred chapter advance armed when a boundary page lands.
-  ///
-  /// Any touch on the 章末/章首 page counts as interacting with it, so the
-  /// pending auto-advance is dropped instead of firing 600 ms later — e.g. the
-  /// 查看本章评论 button would otherwise swap chapters while its sheet is open.
-  void cancelBoundaryLanding() => _boundaryLandingTimer?.cancel();
-
-  /// Wraps a boundary page so its first touch cancels the deferred advance.
-  Widget _boundaryInteractionGuard(Widget child) => Listener(
-    behavior: HitTestBehavior.translucent,
-    onPointerDown: (_) => cancelBoundaryLanding(),
-    child: child,
-  );
 
   Future<void> turnPage(int direction) async {
     if (_turning || _boundaryPending || !_controller.hasClients) return;
@@ -179,16 +153,15 @@ class ReaderPagedViewState extends State<ReaderPagedView> {
     if (pages == 0) return;
     final target = (progress * pages).floor().clamp(0, pages - 1);
     final current = _controller.page ?? _controller.initialPage.toDouble();
-    final targetItem = target + _leading;
-    if ((current - targetItem).abs() < 1) return;
-    _controller.jumpToPage(targetItem);
+    if ((current - target).abs() < 1) return;
+    _controller.jumpToPage(target);
   }
 
   Future<void> _requestBoundary(int direction) async {
     if (_boundaryPending) return;
     // The final chapter's comments page is a stable stop, with no next chapter
     // to request and no text page to bounce back to.
-    if (direction > 0 && !widget.hasNextChapter && widget.endPage != null) {
+    if (direction > 0 && _hasEndPage) {
       return;
     }
     setState(() => _boundaryPending = true);
@@ -198,7 +171,7 @@ class ReaderPagedViewState extends State<ReaderPagedView> {
     } finally {
       if (mounted && identical(layout, widget.layout)) {
         if (_controller.hasClients) {
-          _controller.jumpToPage(widget.pageIndex + _leading);
+          _controller.jumpToPage(widget.pageIndex);
         }
         setState(() => _boundaryPending = false);
       }
@@ -214,11 +187,18 @@ class ReaderPagedViewState extends State<ReaderPagedView> {
         notification.dragDetails != null) {
       _overscroll = 0;
       _edgeNotified = false;
+      _dragStartItem = _controller.hasClients
+          ? _controller.page?.round()
+          : null;
       widget.onDragStart();
     }
     if (notification is OverscrollNotification &&
         notification.dragDetails != null &&
         !_edgeNotified) {
+      // A gesture starting on another text page may reach the edge, but must
+      // not also skip that page and cross a chapter within the same swipe.
+      final direction = notification.overscroll < 0 ? -1 : 1;
+      if (_dragStartItem != (direction < 0 ? 0 : _itemCount - 1)) return false;
       _overscroll += notification.overscroll;
       if (_overscroll.abs() > 32) {
         _edgeNotified = true;
@@ -244,58 +224,16 @@ class ReaderPagedViewState extends State<ReaderPagedView> {
               ),
         itemCount: _itemCount,
         onPageChanged: (index) {
-          final page = index - _leading;
-          if (page < 0 || page >= widget.layout.pages.length) {
-            widget.onBoundaryLanded?.call(page < 0 ? -1 : 1);
-            // 章末/章首边界页是停靠点: advancing immediately on landing made
-            // the boundary buttons untouchable (they flashed for tens of
-            // milliseconds before the chapter swapped). The request is
-            // deferred briefly instead — the buttons work during the window,
-            // and swiping straight through still advances.
-            _boundaryLandingTimer?.cancel();
-            if (!widget.autoAdvanceBoundary) return;
-            if (page >= widget.layout.pages.length && !widget.hasNextChapter) {
-              return;
-            }
-            _boundaryLandingTimer = Timer(
-              const Duration(milliseconds: 600),
-              () {
-                if (!mounted || !_controller.hasClients) return;
-                // The user flipped away during the window: leave them be.
-                // (Compare rounded: the settle may stop a hair short.)
-                final current = _controller.page ?? index.toDouble();
-                if (current.round() != index) return;
-                unawaited(_requestBoundary(page < 0 ? -1 : 1));
-              },
-            );
+          if (index >= widget.layout.pages.length) {
+            widget.onBookEnd?.call();
             return;
           }
-          _boundaryLandingTimer?.cancel();
-          widget.onPageChanged(page);
+          widget.onPageChanged(index);
         },
         itemBuilder: (context, index) {
-          final page = index - _leading;
-          if (page < 0) {
-            return _boundaryInteractionGuard(
-              widget.startPage ??
-                  Center(
-                    child: Text(
-                      '上一章',
-                      style: TextStyle(color: widget.backgroundColor),
-                    ),
-                  ),
-            );
-          }
+          final page = index;
           if (page >= widget.layout.pages.length) {
-            return _boundaryInteractionGuard(
-              widget.endPage ??
-                  Center(
-                    child: Text(
-                      '下一章',
-                      style: TextStyle(color: widget.backgroundColor),
-                    ),
-                  ),
-            );
+            return widget.endPage!;
           }
           Widget content = ReaderPageContent(
             key: ValueKey('reader-text-page-$page'),
@@ -327,7 +265,7 @@ class ReaderPagedViewState extends State<ReaderPagedView> {
                     _controller.position.haveDimensions) {
                   final current = _controller.page;
                   if (current != null) {
-                    final delta = current - (page + _leading);
+                    final delta = current - page;
                     if (delta > 0 && delta < 1) {
                       shift = delta * _viewportWidth;
                     }

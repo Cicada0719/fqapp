@@ -458,7 +458,7 @@ class _ReaderAppearanceSheetState extends State<ReaderAppearanceSheet> {
                         ),
                         _toggle(
                           '连续阅读',
-                          subtitle: '滚动到底继续下拉，自动进入下一章，不用点章末的下一章',
+                          subtitle: '滚动到底继续下拉进入下一章；分页始终直接跨章',
                           value: _value.continuousReading,
                           onChanged: (value) => _update(
                             _value.copyWith(continuousReading: value),
