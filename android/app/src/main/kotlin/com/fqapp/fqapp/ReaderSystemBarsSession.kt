@@ -3,7 +3,7 @@ package com.fqapp.fqapp
 // Note: SDK 36 keeps edge-to-edge layout while the reader hides system bars.
 // See .agents/notes/implemented/bug-fix/2026-10-12-reader-system-bars.md.
 class ReaderSystemBarsSession {
-    data class State(val visibleTypes: Int, val behavior: Int)
+    data class State(val visibleTypes: Int, val behavior: Int, val cutoutMode: Int? = null)
 
     interface Window {
         fun snapshot(): State

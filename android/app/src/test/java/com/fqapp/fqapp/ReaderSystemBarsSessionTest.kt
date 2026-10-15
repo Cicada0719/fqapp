@@ -5,18 +5,20 @@ import org.junit.Test
 
 class ReaderSystemBarsSessionTest {
     private class Window(
-        var state: ReaderSystemBarsSession.State = ReaderSystemBarsSession.State(3, 1),
+        var state: ReaderSystemBarsSession.State = ReaderSystemBarsSession.State(3, 1, 0),
     ) : ReaderSystemBarsSession.Window {
         var restores = 0
         override fun snapshot() = state
-        override fun hide() { state = ReaderSystemBarsSession.State(0, 2) }
+        override fun hide() {
+            state = ReaderSystemBarsSession.State(0, 2, state.cutoutMode?.let { 3 })
+        }
         override fun restore(state: ReaderSystemBarsSession.State) {
             this.state = state
             restores++
         }
     }
 
-    @Test fun repeatedEntryAndFocusRestoreTheOriginalBars() {
+    @Test fun repeatedEntryAndFocusRestoreTheOriginalBarsAndCutoutMode() {
         val session = ReaderSystemBarsSession()
         val window = Window()
         val original = window.state
@@ -26,6 +28,7 @@ class ReaderSystemBarsSessionTest {
         window.state = original // The OS/Flutter restored bars on focus gain.
         session.reapply()
         assertEquals(0, window.state.visibleTypes)
+        assertEquals(3, window.state.cutoutMode)
         session.close("reader")
         assertEquals(original, window.state)
         assertEquals(1, window.restores)
@@ -53,12 +56,12 @@ class ReaderSystemBarsSessionTest {
         session.attach(first)
         session.open("reader")
         session.detach()
-        assertEquals(ReaderSystemBarsSession.State(3, 1), first.state)
-        val second = Window(ReaderSystemBarsSession.State(2, 0))
+        assertEquals(ReaderSystemBarsSession.State(3, 1, 0), first.state)
+        val second = Window(ReaderSystemBarsSession.State(2, 0, 2))
         session.attach(second)
         assertEquals(0, second.state.visibleTypes)
         session.clear()
-        assertEquals(ReaderSystemBarsSession.State(2, 0), second.state)
+        assertEquals(ReaderSystemBarsSession.State(2, 0, 2), second.state)
     }
 
     @Test fun closingWhileDetachedDoesNotHideBarsOnReattach() {
@@ -69,6 +72,6 @@ class ReaderSystemBarsSessionTest {
         session.close("reader")
         val next = Window()
         session.attach(next)
-        assertEquals(ReaderSystemBarsSession.State(3, 1), next.state)
+        assertEquals(ReaderSystemBarsSession.State(3, 1, 0), next.state)
     }
 }

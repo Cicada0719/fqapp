@@ -91,19 +91,45 @@ class ReaderDevicePlugin : FlutterPlugin, ActivityAware,
                 )) {
                     if (insets == null || insets.isVisible(type)) visible = visible or type
                 }
-                return ReaderSystemBarsSession.State(visible, controller.systemBarsBehavior)
+                return ReaderSystemBarsSession.State(
+                    visible,
+                    controller.systemBarsBehavior,
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                        window.attributes.layoutInDisplayCutoutMode
+                    } else null,
+                )
             }
 
             override fun hide() {
+                // DEFAULT can letterbox the entire window when the status bar hides.
+                // Extend the reader background; Flutter handles content safe insets.
+                setCutoutMode(
+                    when {
+                        Build.VERSION.SDK_INT >= Build.VERSION_CODES.R ->
+                            WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+                        Build.VERSION.SDK_INT >= Build.VERSION_CODES.P ->
+                            WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                        else -> null
+                    }
+                )
                 controller.systemBarsBehavior =
                     WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
                 controller.hide(types)
             }
 
             override fun restore(state: ReaderSystemBarsSession.State) {
+                setCutoutMode(state.cutoutMode)
                 controller.systemBarsBehavior = state.behavior
                 controller.show(state.visibleTypes)
                 controller.hide(types and state.visibleTypes.inv())
+            }
+
+            private fun setCutoutMode(mode: Int?) {
+                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P || mode == null) return
+                val attributes = window.attributes
+                if (attributes.layoutInDisplayCutoutMode == mode) return
+                attributes.layoutInDisplayCutoutMode = mode
+                window.attributes = attributes
             }
         })
         decor.viewTreeObserver.addOnWindowFocusChangeListener(windowFocusListener)

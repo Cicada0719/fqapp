@@ -1,3 +1,5 @@
+import 'dart:ui' as ui;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -99,6 +101,55 @@ void main() {
     expect(immersiveRequests(), isNot(contains(true)));
     await tester.pumpWidget(const SizedBox.shrink());
   });
+
+  for (final mode in ['paged', 'scroll']) {
+    testWidgets(
+      '$mode paints full background but keeps content below a cutout',
+      (tester) async {
+        SharedPreferences.setMockInitialValues({
+          'reader_page_mode': mode,
+          'reader_show_reading_info': false,
+        });
+        await tester.binding.setSurfaceSize(const Size(390, 800));
+        addTearDown(() => tester.binding.setSurfaceSize(null));
+        await tester.pumpWidget(
+          MaterialApp(
+            builder: (context, child) => MediaQuery(
+              data: MediaQuery.of(context).copyWith(
+                padding: EdgeInsets.zero,
+                viewPadding: EdgeInsets.zero,
+                displayFeatures: const [
+                  ui.DisplayFeature(
+                    bounds: Rect.fromLTWH(170, 8, 50, 32),
+                    type: ui.DisplayFeatureType.cutout,
+                    state: ui.DisplayFeatureState.unknown,
+                  ),
+                ],
+              ),
+              child: child!,
+            ),
+            home: _reader(),
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(
+          tester.getRect(find.byType(Scaffold)),
+          const Rect.fromLTWH(0, 0, 390, 800),
+        );
+        final viewport = tester.getRect(_surface);
+        expect(viewport.top, greaterThanOrEqualTo(40));
+        await tester.tapAt(viewport.center);
+        await tester.pumpAndSettle();
+        expect(
+          tester.getRect(find.byTooltip('返回书籍')).top,
+          greaterThanOrEqualTo(40),
+        );
+        expect(tester.getRect(_surface), viewport);
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox.shrink());
+      },
+    );
+  }
 
   for (final bottom in [24.0, 48.0]) {
     for (final mode in ['paged', 'scroll']) {

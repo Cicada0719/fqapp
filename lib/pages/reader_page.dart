@@ -24,6 +24,7 @@ import '../widgets/reader/reader_appearance_sheet.dart';
 import '../widgets/reader/reader_bubble.dart';
 import '../widgets/reader/reader_chapter_layout.dart';
 import '../widgets/reader/reader_controls.dart';
+import '../widgets/reader/reader_cutout_insets.dart';
 import '../widgets/reader/reader_illustration.dart';
 import '../widgets/reader/reader_ideas_sheet.dart';
 import '../widgets/reader/reader_paged_view.dart';
@@ -1986,6 +1987,13 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
         body: _errorView(),
       );
     }
+    return MediaQuery(
+      data: readerMediaQueryWithCutoutInsets(MediaQuery.of(context)),
+      child: Builder(builder: _buildReader),
+    );
+  }
+
+  Widget _buildReader(BuildContext context) {
     final preset = _effectivePreset;
     final windowPadding = MediaQuery.paddingOf(context);
     final overlayStyle = preset.isDark
