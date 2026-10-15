@@ -14,6 +14,7 @@ class ReaderStatusBar extends StatelessWidget {
   final bool paged;
   final int? pageIndex;
   final int? pageCount;
+  final bool compact;
 
   const ReaderStatusBar({
     super.key,
@@ -25,6 +26,7 @@ class ReaderStatusBar extends StatelessWidget {
     this.paged = false,
     this.pageIndex,
     this.pageCount,
+    this.compact = false,
   });
 
   @override
@@ -46,7 +48,7 @@ class ReaderStatusBar extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            if (paged) ...[
+            if (paged && !compact) ...[
               Text(
                 '第 ${chapterIndex + 1} / $chapterCount 章 · '
                 '本章 ${pageIndex == null ? '—' : pageIndex! + 1} / ${pageCount ?? '—'} 页',
@@ -65,7 +67,7 @@ class ReaderStatusBar extends StatelessWidget {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Text(time, key: const ValueKey('reader-clock')),
-                    if (status.battery != null) ...[
+                    if (!compact && status.battery != null) ...[
                       const SizedBox(width: 5),
                       Icon(
                         status.charging
@@ -81,7 +83,8 @@ class ReaderStatusBar extends StatelessWidget {
                     ],
                   ],
                 ),
-                if (!paged) Text('${chapterIndex + 1} / $chapterCount 章'),
+                if (!compact && !paged)
+                  Text('${chapterIndex + 1} / $chapterCount 章'),
                 Text(
                   '全书 ${(progress.clamp(0, 1) * 100).toStringAsFixed(1)}%',
                   key: const ValueKey('reader-progress'),

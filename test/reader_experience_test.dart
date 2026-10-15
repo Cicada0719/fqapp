@@ -202,6 +202,7 @@ void main() {
       SharedPreferences.setMockInitialValues({
         'reader_page_mode': 'paged',
         'reader_volume_key_turn': true,
+        'reader_info_mode': 'detailed',
       });
       await tester.binding.setSurfaceSize(const Size(400, 800));
       addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -245,6 +246,7 @@ void main() {
       SharedPreferences.setMockInitialValues({
         'reader_page_mode': 'paged',
         'reader_auto_turn_seconds': 3,
+        'reader_info_mode': 'detailed',
       });
       await tester.binding.setSurfaceSize(const Size(400, 800));
       addTearDown(() => tester.binding.setSurfaceSize(null));

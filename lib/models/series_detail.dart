@@ -74,10 +74,11 @@ class SeriesDetail {
     this.playCount = 0,
     this.followerCount = 0,
     this.commentCount = 0,
-  this.categories = const [],
-  this.originalBook,
-  this.status,
-  this.seriesColorHex = '',
+    this.categories = const [],
+    this.originalBook,
+    this.status,
+    this.seriesColorHex = '',
+    this.relatedAlbumId = '',
   });
 
   static const empty = SeriesDetail();
@@ -115,6 +116,9 @@ class SeriesDetail {
   /// accent（当前集格子/播放钮）都从这里推导（`BaseSeriesDetailFragment.Zf`），
   /// 空串时官方回退 `@color/w4`=#404040。
   final String seriesColorHex;
+  final String relatedAlbumId;
+
+  bool get hasRelatedSeries => (int.tryParse(relatedAlbumId) ?? 0) > 0;
 
   bool get isEmpty => title.isEmpty && cast.isEmpty;
 
@@ -150,6 +154,7 @@ class SeriesDetail {
           ? null
           : _int(video['series_status']),
       seriesColorHex: _string(video['series_color_hex']),
+      relatedAlbumId: _string(video['related_album_id']),
     );
   }
 }

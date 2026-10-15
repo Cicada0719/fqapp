@@ -195,6 +195,7 @@ class StoryPlayerPanel extends StatefulWidget {
 
   /// 点头部（官方 `right_icon` 箭头）。
   final VoidCallback? onOpenSeries;
+  final VoidCallback? onOpenRelatedSeries;
 
   /// 关联原著条（官方 `aa8.xml:17` 的 `gnh`，由
   /// `series_relate_book_config_v659.relate_book_in_episodes_dialog` 控制，
@@ -221,6 +222,7 @@ class StoryPlayerPanel extends StatefulWidget {
     this.episodeLabel = '',
     this.freeWatch = false,
     this.onOpenSeries,
+    this.onOpenRelatedSeries,
     this.relateBook,
     this.onOpenRelateBook,
     required this.onSelectEpisode,
@@ -478,7 +480,10 @@ class _StoryPlayerPanelState extends State<StoryPlayerPanel> {
   @override
   Widget build(BuildContext context) {
     final scale = MediaQuery.textScalerOf(context);
-    final tabHeight = math.max(40.0, scale.scale(14) + 22);
+    final tabHeight = math.max(
+      widget.onOpenRelatedSeries == null ? 40.0 : 48.0,
+      scale.scale(14) + 22,
+    );
     final showPaging = widget.episodes.length > _pageSize;
     final headerHeight =
         12 +
@@ -557,7 +562,6 @@ class _StoryPlayerPanelState extends State<StoryPlayerPanel> {
                             children: [
                               // 官方单 tab「选集」：14sp 粗体 `#FF1B1B1B`、
                               // padding 20/13、无下划线指示器（`hj3/p.java:97-124`）。
-                              // 「简介」tab 仅有关联剧才出现（本仓库无数据）。
                               Padding(
                                 padding: const EdgeInsets.only(left: 20),
                                 child: Text(
@@ -572,6 +576,15 @@ class _StoryPlayerPanelState extends State<StoryPlayerPanel> {
                                   ),
                                 ),
                               ),
+                              const Spacer(),
+                              if (widget.onOpenRelatedSeries != null)
+                                TextButton(
+                                  key: const ValueKey(
+                                    'story-panel-related-series',
+                                  ),
+                                  onPressed: widget.onOpenRelatedSeries,
+                                  child: const Text('同系列'),
+                                ),
                             ],
                           ),
                         ),
@@ -809,6 +822,7 @@ class StoryEpisodeDrawer extends StatefulWidget {
   final Set<int> watched;
   final ValueChanged<int> onSelectEpisode;
   final VoidCallback onClose;
+  final VoidCallback? onOpenRelatedSeries;
 
   const StoryEpisodeDrawer({
     super.key,
@@ -819,6 +833,7 @@ class StoryEpisodeDrawer extends StatefulWidget {
     this.watched = const <int>{},
     required this.onSelectEpisode,
     required this.onClose,
+    this.onOpenRelatedSeries,
   });
 
   @override
@@ -894,6 +909,18 @@ class _StoryEpisodeDrawerState extends State<StoryEpisodeDrawer> {
                       ),
                     ),
                   ),
+                  if (widget.onOpenRelatedSeries != null)
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: TextButton(
+                        key: const ValueKey('story-drawer-related-series'),
+                        onPressed: widget.onOpenRelatedSeries,
+                        style: TextButton.styleFrom(
+                          foregroundColor: Colors.white,
+                        ),
+                        child: const Text('同系列'),
+                      ),
+                    ),
                 ],
               ),
             ),

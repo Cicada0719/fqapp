@@ -14,6 +14,7 @@ use crate::error::{ApiError, ApiResult};
 
 const HOMEPAGE_RECOMMEND_PATH: &str = "/reading/bookapi/bookmall/tab/v";
 const SERIES_FEED_PATH: &str = "/reading/bookapi/bookmall/cell/change/v";
+const SERIES_RELATED_PATH: &str = "/reading/bookapi/plan/v";
 
 /// Go's `reading724Params` (content_util.go).
 fn reading724_params() -> Params {
@@ -329,8 +330,35 @@ fn channel_tabs<'a>(ctx: &'a Ctx, params: &'a Params) -> BoxFuture<'a, ApiResult
     })
 }
 
+// Official lo3/f.java:281-285 uses scene=10, not a general recommendation.
+// Note: .agents/notes/implemented/feature/2026-10-15-related-series.md
+fn series_related<'a>(ctx: &'a Ctx, params: &'a Params) -> BoxFuture<'a, ApiResult<Value>> {
+    Box::pin(async move {
+        let series_id = params.get_str("series_id");
+        if series_id.is_empty() || !series_id.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(ApiError::BadRequest("缺少有效的series_id参数".to_string()));
+        }
+        let mut p = reading724_params();
+        p.set("scene", "10");
+        p.set("from", "series_short_play_info");
+        p.set("book_id", series_id.clone());
+        p.set("filter_ids", series_id);
+        Upstream::new(ctx.up.clone())
+            .json(&UpstreamRequestSpec {
+                mode: UpstreamMode::DeviceSigned,
+                host: HOST_FQNOVEL.to_string(),
+                path: SERIES_RELATED_PATH.to_string(),
+                params: p.to_pairs(),
+                headers: dragon_read_headers(),
+                ..Default::default()
+            })
+            .await
+    })
+}
+
 pub fn register(s: &mut Server) {
     s.add_route("homepage_recommend", homepage_recommend);
     s.add_route("channel_tabs", channel_tabs);
     s.add_route("series_feed", series_feed);
+    s.add_route("series_related", series_related);
 }

@@ -19,6 +19,7 @@ import '../models/media_item.dart';
 import '../models/media_id.dart';
 import '../models/playlet_comment.dart';
 import '../models/rank.dart';
+import '../models/related_series.dart';
 import '../models/search_discovery.dart';
 import '../models/series_detail.dart';
 import 'app_log.dart';
@@ -1070,6 +1071,20 @@ class ApiClient {
       if (strict) rethrow;
       return SeriesDetail.empty;
     }
+  }
+
+  Future<List<RelatedSeries>> relatedSeries(String seriesId) async {
+    final response = await _get(
+      _url('/api/v1/series/${Uri.encodeComponent(seriesId)}/related', {}),
+    );
+    final status = response.statusCode;
+    final bytes = response.bodyBytes;
+    return Isolate.run(
+      () => RelatedSeries.fromPayload(
+        _decodeEnvelope(status, bytes),
+        currentSeriesId: seriesId,
+      ),
+    );
   }
 
   /// Returns comic pages in backend order with absolute HTTP(S) URLs.

@@ -1,11 +1,17 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_lucide/flutter_lucide.dart';
 
 import '../../models/media_item.dart';
+import '../../models/series_detail.dart';
+import '../../models/related_series.dart';
 import '../../services/api_client.dart';
+import '../../services/backend_transport.dart';
 import '../../services/player_history.dart';
 import '../../services/library_store.dart';
 import '../../services/user_facing_error.dart';
+import 'related_series_sheet.dart';
 
 /// 快速选集半屏抽屉：在 Feed 流中无需跳页，快速预览剧集目录并就地选择集数或全屏观看。
 class PlayletQuickCatalogSheet extends StatefulWidget {
@@ -16,6 +22,8 @@ class PlayletQuickCatalogSheet extends StatefulWidget {
   final void Function(int episodeIndex, List<Chapter> allEpisodes)
   onEpisodeSelected;
   final VoidCallback onFullscreen;
+  final Future<SeriesDetail> Function(String)? seriesLoader;
+  final ValueChanged<RelatedSeries>? onRelatedSeriesSelected;
 
   const PlayletQuickCatalogSheet({
     super.key,
@@ -24,6 +32,8 @@ class PlayletQuickCatalogSheet extends StatefulWidget {
     this.historyStore,
     required this.onEpisodeSelected,
     required this.onFullscreen,
+    this.seriesLoader,
+    this.onRelatedSeriesSelected,
   });
 
   static Future<void> show(
@@ -35,6 +45,8 @@ class PlayletQuickCatalogSheet extends StatefulWidget {
     required void Function(int episodeIndex, List<Chapter> allEpisodes)
     onEpisodeSelected,
     required VoidCallback onFullscreen,
+    Future<SeriesDetail> Function(String)? seriesLoader,
+    ValueChanged<RelatedSeries>? onRelatedSeriesSelected,
   }) {
     return showModalBottomSheet<void>(
       context: context,
@@ -46,6 +58,8 @@ class PlayletQuickCatalogSheet extends StatefulWidget {
         historyStore: historyStore,
         onEpisodeSelected: onEpisodeSelected,
         onFullscreen: onFullscreen,
+        seriesLoader: seriesLoader,
+        onRelatedSeriesSelected: onRelatedSeriesSelected,
       ),
     );
   }
@@ -60,11 +74,50 @@ class _PlayletQuickCatalogSheetState extends State<PlayletQuickCatalogSheet> {
   String? _error;
   List<Chapter> _episodes = const [];
   int _currentIndex = 0;
+  final _detailRequest = BackendRequest();
+  bool _hasRelatedSeries = false;
 
   @override
   void initState() {
     super.initState();
     _loadDirectory();
+    if (widget.onRelatedSeriesSelected != null) {
+      unawaited(_loadRelatedAvailability());
+    }
+  }
+
+  @override
+  void dispose() {
+    _detailRequest.cancel();
+    super.dispose();
+  }
+
+  Future<void> _loadRelatedAvailability() async {
+    final id = widget.item.seriesId ?? widget.item.id;
+    try {
+      final detail = await ApiClient.instance
+          .withCancellation(
+            _detailRequest,
+            () =>
+                widget.seriesLoader?.call(id) ??
+                ApiClient.instance.seriesDetail(id),
+          )
+          .timeout(const Duration(seconds: 20));
+      if (mounted) setState(() => _hasRelatedSeries = detail.hasRelatedSeries);
+    } catch (_) {
+      _detailRequest.cancel();
+      // Missing optional metadata must not hide the playable episode list.
+    }
+  }
+
+  Future<void> _openRelatedSeries() async {
+    final entry = await RelatedSeriesSheet.show(
+      context,
+      widget.item.seriesId ?? widget.item.id,
+    );
+    if (!mounted || entry == null) return;
+    Navigator.of(context).pop();
+    widget.onRelatedSeriesSelected?.call(entry);
   }
 
   Future<void> _loadDirectory() async {
@@ -288,6 +341,16 @@ class _PlayletQuickCatalogSheetState extends State<PlayletQuickCatalogSheet> {
             ),
 
             const Divider(color: Color(0x1FFFFFFF), height: 1),
+            if (_hasRelatedSeries)
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton(
+                  key: const ValueKey('quick-catalog-related-series'),
+                  onPressed: _openRelatedSeries,
+                  style: TextButton.styleFrom(foregroundColor: Colors.white),
+                  child: const Text('同系列'),
+                ),
+              ),
 
             // Content body
             Flexible(child: _buildBody(context)),

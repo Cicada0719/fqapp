@@ -2011,7 +2011,8 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
                 SafeArea(
                   child: Column(
                     children: [
-                      if (_preferences.showReadingInfo)
+                      if (_preferences.readingInfoMode ==
+                          ReaderInfoMode.detailed)
                         GestureDetector(
                           onTap: _toggleControls,
                           behavior: HitTestBehavior.opaque,
@@ -2059,6 +2060,9 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
                           builder: (context, _) => ReaderStatusBar(
                             key: const ValueKey('reader-status-bar'),
                             preset: preset,
+                            compact:
+                                _preferences.readingInfoMode ==
+                                ReaderInfoMode.compact,
                             status: _deviceStatus,
                             progress: _chapterProgress(),
                             chapterIndex: _index,

@@ -467,16 +467,56 @@ class _ReaderAppearanceSheetState extends State<ReaderAppearanceSheet> {
                         _toggle(
                           '阅读时保持屏幕常亮',
                           value: _value.keepScreenOn,
-                          onChanged: (value) => _update(
-                            _value.copyWith(keepScreenOn: value),
-                          ),
-                        ),
-                        _toggle(
-                          '阅读信息',
-                          subtitle: '书名、章节、进度、时间与电量',
-                          value: _value.showReadingInfo,
                           onChanged: (value) =>
-                              _update(_value.copyWith(showReadingInfo: value)),
+                              _update(_value.copyWith(keepScreenOn: value)),
+                        ),
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                '阅读信息',
+                                style: TextStyle(
+                                  color: _displayPreset.textColor,
+                                  fontSize: 13,
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              Wrap(
+                                spacing: 8,
+                                runSpacing: 4,
+                                children: [
+                                  for (final mode in ReaderInfoMode.values)
+                                    ChoiceChip(
+                                      key: ValueKey('reader-info-${mode.name}'),
+                                      label: Text(switch (mode) {
+                                        ReaderInfoMode.hidden => '关闭',
+                                        ReaderInfoMode.compact => '简洁',
+                                        ReaderInfoMode.detailed => '详细',
+                                      }),
+                                      selected: _value.readingInfoMode == mode,
+                                      onSelected: (_) => _update(
+                                        _value.copyWith(readingInfoMode: mode),
+                                      ),
+                                    ),
+                                ],
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                switch (_value.readingInfoMode) {
+                                  ReaderInfoMode.hidden => '隐藏顶部与底部阅读信息',
+                                  ReaderInfoMode.compact => '仅在底部显示时间与全书进度',
+                                  ReaderInfoMode.detailed =>
+                                    '显示书名、章节、页码、进度、时间与电量',
+                                },
+                                style: TextStyle(
+                                  color: _displayPreset.mutedTextColor,
+                                  fontSize: 12,
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
                         // 更多排版: fine-grained sliders without an official
                         // counterpart (字距/标题字号/标题对齐), tucked away so the

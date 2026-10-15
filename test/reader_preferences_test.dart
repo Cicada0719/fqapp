@@ -10,6 +10,33 @@ void main() {
     SharedPreferences.setMockInitialValues({});
   });
 
+  test(
+    'reading info migrates the old switch and remembers an explicit mode',
+    () async {
+      expect(
+        (await ReaderPreferences.load()).readingInfoMode,
+        ReaderInfoMode.compact,
+      );
+      SharedPreferences.setMockInitialValues({
+        'reader_show_reading_info': false,
+      });
+      final hidden = await ReaderPreferences.load();
+      expect(hidden.readingInfoMode, ReaderInfoMode.hidden);
+      await hidden.copyWith(readingInfoMode: ReaderInfoMode.detailed).save();
+      final restored = await ReaderPreferences.load();
+      expect(restored.readingInfoMode, ReaderInfoMode.detailed);
+      expect(
+        restored.copyWith(fontSize: 22).readingInfoMode,
+        ReaderInfoMode.detailed,
+      );
+      SharedPreferences.setMockInitialValues({
+        'reader_info_mode': 'unknown',
+        'reader_show_reading_info': false,
+      });
+      expect((await ReaderPreferences.load()).showReadingInfo, isFalse);
+    },
+  );
+
   test('reader preferences persist all appearance values', () async {
     const expected = ReaderPreferences(
       fontSize: 23,

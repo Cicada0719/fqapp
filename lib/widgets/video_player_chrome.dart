@@ -112,6 +112,7 @@ class VideoPlayerChrome extends StatefulWidget {
   /// 标题行「剧名 >」点击 → 官方进剧集详情页（`series_detail`，ql3/v0
   /// `a1()` 的默认分支）。null 时不响应（非短剧形态）。
   final VoidCallback? onOpenSeriesDetail;
+  final VoidCallback? onOpenRelatedSeries;
   final String seriesCover;
   final String episodeLabel;
 
@@ -192,6 +193,7 @@ class VideoPlayerChrome extends StatefulWidget {
     this.onHotCommentTap,
     this.seriesTitle = '',
     this.onOpenSeriesDetail,
+    this.onOpenRelatedSeries,
     this.seriesCover = '',
     this.episodeLabel = '',
     this.relateBook,
@@ -1235,6 +1237,11 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
     ),
   );
 
+  Future<void> _openRelatedSeries() async {
+    await _closePanel();
+    if (mounted) widget.onOpenRelatedSeries?.call();
+  }
+
   void _openPanel() {
     if (_locked || _overlayOpen || _panelOpen) return;
     _endBoost();
@@ -1982,6 +1989,9 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
                       child: Opacity(opacity: t, child: child!),
                     ),
                     child: StoryEpisodeDrawer(
+                      onOpenRelatedSeries: widget.onOpenRelatedSeries == null
+                          ? null
+                          : _openRelatedSeries,
                       episodes: widget.episodes,
                       currentIndex: widget.currentIndex,
                       playingIndex:
@@ -2038,6 +2048,9 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
                         snapSizes: _panelSnapSizes,
                         shouldCloseOnMinExtent: false,
                         builder: (context, scroll) => StoryPlayerPanel(
+                          onOpenRelatedSeries: widget.onOpenRelatedSeries == null
+                              ? null
+                              : _openRelatedSeries,
                           seriesTitle: widget.seriesTitle,
                           seriesCover: widget.seriesCover,
                           episodeLabel: widget.episodeLabel,

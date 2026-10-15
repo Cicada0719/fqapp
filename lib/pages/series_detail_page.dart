@@ -9,6 +9,8 @@ import '../models/book_detail.dart' show formatCounter;
 import '../models/media_item.dart';
 import '../models/playlet_comment.dart';
 import '../models/series_detail.dart' show SeriesDetail, SeriesRelateBook;
+import '../models/related_series.dart';
+import '../widgets/player/related_series_sheet.dart';
 import '../services/api_client.dart';
 import '../services/backend_transport.dart';
 import '../services/library_store.dart';
@@ -28,6 +30,7 @@ class SeriesDetailPage extends StatefulWidget {
   const SeriesDetailPage({
     super.key,
     required this.seriesId,
+    this.kind = 'video',
     this.title = '',
     this.cover = '',
     this.episodes = const [],
@@ -41,9 +44,12 @@ class SeriesDetailPage extends StatefulWidget {
     this.commentLoader,
     this.directoryLoader,
     this.onPlayEpisode,
+    this.onOpenRelatedSeries,
   });
 
   final String seriesId;
+  final String kind;
+  final ValueChanged<RelatedSeries>? onOpenRelatedSeries;
 
   /// 详情接口回来前的兜底标题/封面（宿主播放页已拉过一次 seriesDetail）。
   final String title;
@@ -265,7 +271,10 @@ class _SeriesDetailPageState extends State<SeriesDetailPage> {
       final volumes = await _request(
         () =>
             widget.directoryLoader?.call(widget.seriesId) ??
-            ApiClient.instance.directoryChapters(widget.seriesId, tab: '短剧'),
+            ApiClient.instance.directoryChapters(
+              widget.seriesId,
+              tab: widget.kind == 'manju' ? '漫剧' : '短剧',
+            ),
       );
       if (!mounted) return;
       setState(() {
@@ -522,7 +531,7 @@ class _SeriesDetailPageState extends State<SeriesDetailPage> {
         MaterialPageRoute<void>(
           builder: (_) => PlayerPage(
             bookId: widget.seriesId,
-            kind: 'video',
+            kind: widget.kind,
             title: _titleText.isEmpty ? '第${target + 1}集' : _titleText,
             cover: _coverText,
             eps: _episodes,
@@ -894,28 +903,62 @@ class _SeriesDetailPageState extends State<SeriesDetailPage> {
 
   // ---- 选集区 ----
 
-  /// 选集区块（官方 `cin.xml`）：顶部 1px `@color/agh`=#08FFFFFF 分隔线
-  /// （左右缩进 16、上下留 20），标题行（16sp 白粗 + 右侧 12sp `@color/agw`
-  /// =#66FFFFFF 状态 + 箭头），分页条与格子网格。
+  Future<void> _openRelatedSeries() async {
+    final entry = await RelatedSeriesSheet.show(context, widget.seriesId);
+    if (!mounted || entry == null) return;
+    final open = widget.onOpenRelatedSeries;
+    if (open != null) {
+      open(entry);
+      return;
+    }
+    unawaited(
+      Navigator.of(context).push<void>(
+        MaterialPageRoute<void>(
+          builder: (_) => SeriesDetailPage(
+            seriesId: entry.id,
+            kind: entry.kind,
+            title: entry.title,
+            cover: entry.cover,
+            historyStore: widget.historyStore,
+            seriesLoader: widget.seriesLoader,
+            directoryLoader: widget.directoryLoader,
+            commentLoader: widget.commentLoader,
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 选集区块（官方 `cin.xml`）：分隔线、标题行、分页条与格子网格。
   Widget _episodeSection() {
     final statusText = _episodes.isEmpty ? null : _episodeStatusText;
     final header = _sectionHeader(
       '选集',
-      trailing: statusText == null
-          ? null
-          : Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  statusText,
-                  key: const ValueKey('series-episode-status'),
-                  style: const TextStyle(
-                    fontSize: 12,
-                    color: Color(0x66FFFFFF),
-                  ),
+      trailing: Flexible(
+        child: Wrap(
+          alignment: WrapAlignment.end,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          spacing: 8,
+          children: [
+            if (_detail.hasRelatedSeries)
+              TextButton(
+                key: const ValueKey('series-detail-related-series'),
+                onPressed: _openRelatedSeries,
+                style: TextButton.styleFrom(foregroundColor: Colors.white),
+                child: const Text('同系列'),
+              ),
+            if (statusText != null)
+              Text(
+                statusText,
+                key: const ValueKey('series-episode-status'),
+                style: const TextStyle(
+                  fontSize: 12,
+                  color: Color(0x66FFFFFF),
                 ),
-              ],
-            ),
+              ),
+          ],
+        ),
+      ),
     );
     Widget body;
     if (_episodes.isEmpty) {

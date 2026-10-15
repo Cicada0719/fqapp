@@ -17,7 +17,10 @@ import 'support/fakes.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   setUp(() {
-    SharedPreferences.setMockInitialValues({'reader_page_mode': 'scroll'});
+    SharedPreferences.setMockInitialValues({
+      'reader_page_mode': 'scroll',
+      'reader_info_mode': 'detailed',
+    });
     TestWidgetsFlutterBinding.instance.handleAppLifecycleStateChanged(
       AppLifecycleState.resumed,
     );

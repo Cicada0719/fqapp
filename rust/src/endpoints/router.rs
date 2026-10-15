@@ -375,6 +375,12 @@ fn match_series(parts: &[&str], q: &Params) -> Option<RouteMatch> {
     }
     let mut p = q.clone();
     p.set("series_id", parts[0]);
+    if parts.len() == 2 && parts[1] == "related" {
+        return Some(RouteMatch {
+            api: "series_related",
+            params: p,
+        });
+    }
     // 短剧剧评（`gx1/m.java:168-181`）与短剧分享
     // （`m0.java:938-957`，`share_type=7`）。
     if parts.len() >= 2 {

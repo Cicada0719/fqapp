@@ -7,6 +7,10 @@ enum ReaderTitleAlignment { start, center }
 
 enum ReaderPageMode { paged, scroll }
 
+/// Compact mode keeps one footer; detailed mode also shows book/chapter data.
+/// Note: 兼容旧开关的迁移见 .agents/notes/implemented/feature/2026-10-15-reader-info-modes.md
+enum ReaderInfoMode { hidden, compact, detailed }
+
 /// Page-turn animation for paged mode, mirroring the official 翻页方式 row:
 /// the new page slides in normally (平移), slides over a pinned outgoing page
 /// (覆盖), or appears instantly (无). See
@@ -27,6 +31,7 @@ class ReaderPreferences {
   static const _titleSizeKey = 'reader_title_size';
   static const _titleAlignmentKey = 'reader_title_alignment';
   static const _showReadingInfoKey = 'reader_show_reading_info';
+  static const _readingInfoModeKey = 'reader_info_mode';
   static const _followSystemBrightnessKey = 'reader_follow_system_brightness';
   static const _brightnessKey = 'reader_brightness';
   static const _fontPathKey = 'reader_font_path';
@@ -49,7 +54,8 @@ class ReaderPreferences {
   final double verticalPadding;
   final double titleSize;
   final ReaderTitleAlignment titleAlignment;
-  final bool showReadingInfo;
+  final ReaderInfoMode readingInfoMode;
+  bool get showReadingInfo => readingInfoMode != ReaderInfoMode.hidden;
   final bool followSystemBrightness;
   final double brightness;
   final String fontPath;
@@ -80,7 +86,8 @@ class ReaderPreferences {
     this.verticalPadding = 16,
     this.titleSize = 20,
     this.titleAlignment = ReaderTitleAlignment.start,
-    this.showReadingInfo = true,
+    bool? showReadingInfo,
+    ReaderInfoMode readingInfoMode = ReaderInfoMode.compact,
     this.followSystemBrightness = true,
     this.brightness = 0.5,
     this.fontPath = '',
@@ -92,7 +99,9 @@ class ReaderPreferences {
     this.autoTurnSeconds = 10,
     this.listeningFollow = true,
     this.continuousReading = true,
-  });
+  }) : readingInfoMode = showReadingInfo == false
+           ? ReaderInfoMode.hidden
+           : readingInfoMode;
 
   ReaderPreferences copyWith({
     double? fontSize,
@@ -106,6 +115,7 @@ class ReaderPreferences {
     double? titleSize,
     ReaderTitleAlignment? titleAlignment,
     bool? showReadingInfo,
+    ReaderInfoMode? readingInfoMode,
     bool? followSystemBrightness,
     double? brightness,
     String? fontPath,
@@ -129,7 +139,13 @@ class ReaderPreferences {
       verticalPadding: verticalPadding ?? this.verticalPadding,
       titleSize: titleSize ?? this.titleSize,
       titleAlignment: titleAlignment ?? this.titleAlignment,
-      showReadingInfo: showReadingInfo ?? this.showReadingInfo,
+      readingInfoMode:
+          readingInfoMode ??
+          (showReadingInfo == false
+              ? ReaderInfoMode.hidden
+              : showReadingInfo == true && !this.showReadingInfo
+              ? ReaderInfoMode.compact
+              : this.readingInfoMode),
       followSystemBrightness:
           followSystemBrightness ?? this.followSystemBrightness,
       brightness: brightness ?? this.brightness,
@@ -165,7 +181,7 @@ class ReaderPreferences {
           : 16,
       titleSize: titleSize.isFinite ? titleSize.clamp(16, 40) : 20,
       titleAlignment: titleAlignment,
-      showReadingInfo: showReadingInfo,
+      readingInfoMode: readingInfoMode,
       followSystemBrightness: followSystemBrightness,
       brightness: brightness.isFinite ? brightness.clamp(0.02, 1) : 0.5,
       fontPath: fontPath,
@@ -206,7 +222,12 @@ class ReaderPreferences {
         (value) => value.name == preferences.get(_titleAlignmentKey),
         orElse: () => ReaderTitleAlignment.start,
       ),
-      showReadingInfo: _boolean(preferences, _showReadingInfoKey) ?? true,
+      readingInfoMode: ReaderInfoMode.values.firstWhere(
+        (mode) => mode.name == preferences.get(_readingInfoModeKey),
+        orElse: () => _boolean(preferences, _showReadingInfoKey) == false
+            ? ReaderInfoMode.hidden
+            : ReaderInfoMode.compact,
+      ),
       followSystemBrightness:
           _boolean(preferences, _followSystemBrightnessKey) ?? true,
       brightness: _number(preferences, _brightnessKey) ?? 0.5,
@@ -222,11 +243,11 @@ class ReaderPreferences {
       ),
       volumeKeyTurn: _boolean(preferences, _volumeKeyTurnKey) ?? false,
       keepScreenOn: _boolean(preferences, _keepScreenOnKey) ?? false,
-      autoTurnSeconds:
-          (_number(preferences, _autoTurnSecondsKey) ?? 10).round().clamp(3, 60),
+      autoTurnSeconds: (_number(preferences, _autoTurnSecondsKey) ?? 10)
+          .round()
+          .clamp(3, 60),
       listeningFollow: _boolean(preferences, _listeningFollowKey) ?? true,
-      continuousReading:
-          _boolean(preferences, _continuousReadingKey) ?? true,
+      continuousReading: _boolean(preferences, _continuousReadingKey) ?? true,
     ).normalized();
   }
 
@@ -256,6 +277,7 @@ class ReaderPreferences {
       preferences.setDouble(_titleSizeKey, value.titleSize),
       preferences.setString(_titleAlignmentKey, value.titleAlignment.name),
       preferences.setBool(_showReadingInfoKey, value.showReadingInfo),
+      preferences.setString(_readingInfoModeKey, value.readingInfoMode.name),
       preferences.setBool(
         _followSystemBrightnessKey,
         value.followSystemBrightness,

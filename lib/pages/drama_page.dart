@@ -1557,13 +1557,17 @@ class _DramaPageState extends ConsumerState<DramaPage>
           MaterialPageRoute<void>(
             builder: (_) => SeriesDetailPage(
               seriesId: item.seriesId ?? item.id,
+              kind: item.kind,
               title: item.title,
               cover: item.cover,
               // feed 入口没带目录，详情页自拉；测试缝跟随 DramaPage 的
-              // directoryLoader（tab 固定短剧）。
+              // directoryLoader（按作品种类选择短剧或漫剧）。
               directoryLoader: widget.directoryLoader == null
                   ? null
-                  : (sid) => widget.directoryLoader!(sid, '短剧'),
+                  : (sid) => widget.directoryLoader!(
+                      sid,
+                      item.kind == 'manju' ? '漫剧' : '短剧',
+                    ),
               historyStore: widget.historyStore,
               seriesLoader: widget.seriesDetailLoader,
               commentLoader: widget.seriesCommentLoader,
@@ -1598,6 +1602,19 @@ class _DramaPageState extends ConsumerState<DramaPage>
         );
       },
       onFullscreen: () => unawaited(_openPlayer(item)),
+      seriesLoader: widget.seriesDetailLoader,
+      onRelatedSeriesSelected: (entry) => _openSeriesDetail(
+        MediaItem(
+          id: entry.id,
+          seriesId: entry.id,
+          title: entry.title,
+          cover: entry.cover,
+          kind: entry.kind,
+          author: '',
+          badge: '',
+          ep: entry.episodeCount > 0 ? '共 ${entry.episodeCount} 集' : '',
+        ),
+      ),
     );
   }
 
