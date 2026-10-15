@@ -1,10 +1,54 @@
-# fqapp — 番茄小说/短剧/漫剧/听书/漫画聚合客户端
+<p align="center">
+  <img src="assets/images/app_logo.webp" width="120" height="120" alt="fqapp Logo">
+</p>
 
-fqapp 是一个运行在 **Android 手机本地** 的番茄内容聚合客户端：小说阅读、短剧与漫剧播放、听书、漫画、搜索、历史和离线缓存在同一个 App 里完成。核心（签名、解密、缓存）都在手机上运行，不需要自建服务器，也不需要 root。
+<h1 align="center">fqapp</h1>
+
+<p align="center">
+  <strong>番茄内容聚合客户端</strong><br>
+  小说 · 短剧 · 漫剧 · 漫画 · 听书，签名 / 解密 / 缓存全部在手机本地完成
+</p>
+
+<p align="center">
+  <a href="#-功能一览">功能一览</a> ·
+  <a href="#-下载与安装">下载与安装</a> ·
+  <a href="#-快速上手">快速上手</a> ·
+  <a href="#-常见问题">常见问题</a> ·
+  <a href="#-支持作者">支持作者</a> ·
+  <a href="DEVELOPMENT.md">开发者文档</a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/ch6vip/fqapp/releases/latest">
+    <img alt="Release" src="https://img.shields.io/github/v/release/ch6vip/fqapp?color=EF5038&label=Release&logo=github">
+  </a>
+  &nbsp;
+  <a href="https://github.com/ch6vip/fqapp/releases">
+    <img alt="Downloads" src="https://img.shields.io/github/downloads/ch6vip/fqapp/total?color=14B8A6&label=Downloads&logo=github">
+  </a>
+  &nbsp;
+  <img alt="Platform" src="https://img.shields.io/badge/Platform-Android%207.0%2B%20%C2%B7%20arm64--v8a-3DDC84?logo=android&logoColor=white">
+  &nbsp;
+  <a href="LICENSE">
+    <img alt="License" src="https://img.shields.io/badge/License-GPL--3.0-blue">
+  </a>
+  &nbsp;
+  <a href="https://github.com/ch6vip/fqapp/stargazers">
+    <img alt="Stars" src="https://img.shields.io/github/stars/ch6vip/fqapp?style=social">
+  </a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/ch6vip/fqapp/releases/latest">
+    <img alt="下载 APK" height="44" src="https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD-APK-3DDC84?style=for-the-badge&logo=android&logoColor=white">
+  </a>
+</p>
 
 > ⚠️ **免责声明**：本项目仅供学习与研究交流，不内置、不分发任何内容资源；在线内容均来自番茄公开接口，版权归字节跳动及原权利方所有。本项目与番茄/字节跳动无关联，未获其授权；使用产生的一切后果由使用者自行承担，如有侵权请联系删除。
 
-## 功能一览
+---
+
+## 📖 功能一览
 
 | 功能 | 说明 |
 |---|---|
@@ -18,7 +62,7 @@ fqapp 是一个运行在 **Android 手机本地** 的番茄内容聚合客户端
 | 🕘 历史与书架 | 阅读/播放进度自动记录，续读续看；离线缓存管理 |
 | ⬇️ 下载 | 整本缓存、批量缓存后续章节，下载内容不受自动清理影响 |
 
-## 下载与安装
+## ⬇️ 下载与安装
 
 ### 设备要求
 
@@ -49,7 +93,7 @@ fqapp 是一个运行在 **Android 手机本地** 的番茄内容聚合客户端
 
 > ⚠️ **签名与升级**：正式签名与调试签名的包**不能互相覆盖安装**。Releases 与 Actions 产出的 release 包使用正式签名；从旧签名版本（v1.0.17 及更早）升级需要**先卸载**再安装，卸载会同时清除阅读历史与缓存。同签名版本可直接覆盖升级。
 
-## 快速上手
+## 🚀 快速上手
 
 ### 找内容
 
@@ -95,7 +139,7 @@ fqapp 是一个运行在 **Android 手机本地** 的番茄内容聚合客户端
 - 书架页右上角「离线缓存」可直接打开已缓存书籍，不依赖网络。
 - 设置 → 数据 → 章节缓存：查看占用、删除单本或清空全部。
 
-## 常见问题
+## ❓ 常见问题
 
 **Q：启动时一直停在初始化 / 健康检查失败？**
 首次启动需要联网完成设备注册，请检查网络后重试；运行状态可在「我的 → 服务状态」查看。
@@ -120,23 +164,35 @@ fqapp 是一个运行在 **Android 手机本地** 的番茄内容聚合客户端
 **Q：有 iOS 版吗？**
 没有。当前仅支持 Android（arm64）。
 
-## 许可与免责声明
+## 💖 支持作者
 
-本项目代码以 [GPL-3.0](LICENSE) 协议开源，Copyright (C) 2026 ch6vip。
+如果这个项目对你有帮助，欢迎在爱发电支持我；也欢迎给项目点一个 ⭐ Star。
 
-本项目仅供学习与研究交流，不内置、不分发任何内容资源；在线内容均来自番茄公开接口，版权归字节跳动及原权利方所有。本项目与番茄/字节跳动无关联，未获其授权；使用产生的一切后果由使用者自行承担，如有侵权请联系删除。请遵守相关法律法规，仅限个人学习研究使用。
+[![Afdian](https://img.shields.io/badge/Afdian-Sponsor-946ce6?style=social&logo=afdian)](https://afdian.com/a/ch6vip)
 
-## 致谢（Acknowledgments）
+应用内的同一入口在「设置 → 关于 → 支持作者」。
+
+## 🙏 致谢
 
 Thanks to the [LINUX DO](https://linux.do/) community for its support and feedback.
 
 感谢 [LINUX DO](https://linux.do/) 社区的支持与反馈。
 
-## 支持作者
+## 📄 许可与免责声明
 
-💖 如果这个项目对你有帮助，欢迎在 [爱发电](https://afdian.com/a/ch6vip) 支持我：<https://afdian.com/a/ch6vip>
+本项目代码以 [GPL-3.0](LICENSE) 协议开源，Copyright (C) 2026 ch6vip。
 
-App 内的同一入口在「设置 → 关于 → 支持作者」。
+本项目仅供学习与研究交流，不内置、不分发任何内容资源；在线内容均来自番茄公开接口，版权归字节跳动及原权利方所有。本项目与番茄/字节跳动无关联，未获其授权；使用产生的一切后果由使用者自行承担，如有侵权请联系删除。请遵守相关法律法规，仅限个人学习研究使用。
+
+## ⭐ Star History
+
+<a href="https://www.star-history.com/?repos=ch6vip%2Ffqapp&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=ch6vip/fqapp&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=ch6vip/fqapp&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=ch6vip/fqapp&type=date&legend=top-left" />
+ </picture>
+</a>
 
 ---
 
