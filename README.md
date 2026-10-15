@@ -132,6 +132,12 @@ Thanks to the [LINUX DO](https://linux.do/) community for its support and feedba
 
 感谢 [LINUX DO](https://linux.do/) 社区的支持与反馈。
 
+## 支持作者
+
+💖 如果这个项目对你有帮助，欢迎在 [爱发电](https://afdian.com/a/ch6vip) 支持我：<https://afdian.com/a/ch6vip>
+
+App 内的同一入口在「设置 → 关于 → 支持作者」。
+
 ---
 
 ## 开发者

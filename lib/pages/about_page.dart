@@ -12,7 +12,7 @@ class AboutPage extends StatelessWidget {
   /// `version`. Without a package_info dependency the value is
   /// static, so test/about_version_test.dart parses the pubspec and fails the
   /// build check when the two drift apart after a version bump.
-  static const versionText = '1.0.109 (114)';
+  static const versionText = '1.0.110 (115)';
 
   /// Pixel width of the bundled logo (assets/images/app_logo.webp). The logo
   /// is displayed at 96dp, so it only needs re-decoding above 4× DPI; clamping
@@ -113,6 +113,19 @@ class AboutPage extends StatelessWidget {
                 title: '问题反馈',
                 subtitle: '前往 GitHub Issues 提交',
                 url: 'https://github.com/ch6vip/fqapp/issues',
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          // 支持作者入口。爱发电链接在应用内只用外部浏览器打开（与
+          // Source Code / 问题反馈 行一致），不放任何账号或支付能力。
+          const _AboutCard(
+            children: [
+              _AboutRow(
+                icon: Icons.volunteer_activism,
+                title: '支持作者',
+                subtitle: '如果这个项目对你有帮助，欢迎在爱发电支持我',
+                url: 'https://afdian.com/a/ch6vip',
               ),
             ],
           ),
