@@ -8,6 +8,28 @@ import 'reader_chapter_layout.dart';
 import 'reader_illustration.dart';
 import 'reader_text_selection.dart';
 
+/// One chapter boundary, animated instead of swapped.
+///
+/// Between chapters the reader rebuilds the whole pagination, so there is no
+/// PageView transition to ride on: the surface used to jump straight from the
+/// last page of one chapter to the first page of the next. The host captures
+/// the page that was on screen here, and the view slides it away while the
+/// incoming page (whatever the rebuilt pagination now shows) slides in.
+class ReaderChapterTurn {
+  /// `1` turns forward, `-1` turns backward.
+  final int direction;
+
+  /// The page on screen when the turn started.
+  final ReaderTextPage page;
+  final ReaderLayoutSpec spec;
+
+  const ReaderChapterTurn({
+    required this.direction,
+    required this.page,
+    required this.spec,
+  });
+}
+
 class ReaderPagedView extends StatefulWidget {
   final ReaderChapterLayout layout;
   final int pageIndex;
@@ -46,6 +68,12 @@ class ReaderPagedView extends StatefulWidget {
   final Widget? endPage;
   final VoidCallback? onBookEnd;
 
+  /// Non-null while a chapter boundary is being animated; see
+  /// [ReaderChapterTurn]. The host sets it when it starts loading the
+  /// neighbouring chapter and clears it from [onChapterTurnCompleted].
+  final ReaderChapterTurn? chapterTurn;
+  final VoidCallback? onChapterTurnCompleted;
+
   const ReaderPagedView({
     super.key,
     required this.layout,
@@ -59,6 +87,8 @@ class ReaderPagedView extends StatefulWidget {
     required this.backgroundColor,
     this.endPage,
     this.onBookEnd,
+    this.chapterTurn,
+    this.onChapterTurnCompleted,
     this.imageProviderFactory,
     this.onParagraphLongPress,
     this.onParagraphLongPressMoveUpdate,
@@ -72,13 +102,49 @@ class ReaderPagedView extends StatefulWidget {
   State<ReaderPagedView> createState() => ReaderPagedViewState();
 }
 
-class ReaderPagedViewState extends State<ReaderPagedView> {
+class ReaderPagedViewState extends State<ReaderPagedView>
+    with SingleTickerProviderStateMixin {
   late PageController _controller = _newController();
   bool _turning = false;
   bool _boundaryPending = false;
   bool _edgeNotified = false;
   double _overscroll = 0;
   int? _dragStartItem;
+
+  /// Drives the chapter-boundary slide. Short and not interruptible: the host
+  /// commits the chapter switch when it finishes.
+  late final AnimationController _chapterTurnAnimation;
+
+  bool get _animatesChapterTurn =>
+      widget.chapterTurn != null &&
+      widget.turnStyle != ReaderPageTurnStyle.none;
+
+  @override
+  void initState() {
+    super.initState();
+    _chapterTurnAnimation = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 220),
+    )..addStatusListener(_onChapterTurnStatus);
+
+    // The chapter load swaps the whole content subtree, so a boundary turn
+    // usually arrives as a fresh mount and never reaches didUpdateWidget.
+    if (_animatesChapterTurn) {
+      _chapterTurnAnimation.forward(from: 0);
+    } else if (widget.chapterTurn != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && !_animatesChapterTurn) {
+          widget.onChapterTurnCompleted?.call();
+        }
+      });
+    }
+  }
+
+  void _onChapterTurnStatus(AnimationStatus status) {
+    if (status == AnimationStatus.completed) {
+      widget.onChapterTurnCompleted?.call();
+    }
+  }
 
   double get _viewportWidth => _controller.position.viewportDimension > 0
       ? _controller.position.viewportDimension
@@ -109,10 +175,26 @@ class ReaderPagedViewState extends State<ReaderPagedView> {
       _dragStartItem = null;
       oldController.dispose();
     }
+
+    // Start the boundary slide as soon as the host hands over the outgoing
+    // page; the host commits the chapter switch when it finishes.
+    if (_animatesChapterTurn && oldWidget.chapterTurn == null) {
+      _chapterTurnAnimation.forward(from: 0);
+    } else if (widget.chapterTurn == null) {
+      _chapterTurnAnimation.value = 0;
+    } else if (oldWidget.chapterTurn == null) {
+      // turnStyle is `none`: nothing is painted, so the host must not wait.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && !_animatesChapterTurn) {
+          widget.onChapterTurnCompleted?.call();
+        }
+      });
+    }
   }
 
   @override
   void dispose() {
+    _chapterTurnAnimation.dispose();
     _controller.dispose();
     super.dispose();
   }
@@ -209,7 +291,23 @@ class ReaderPagedViewState extends State<ReaderPagedView> {
   }
 
   @override
-  Widget build(BuildContext context) => Semantics(
+  Widget build(BuildContext context) {
+    final turn = widget.chapterTurn;
+    if (turn == null || !_animatesChapterTurn) {
+      return _buildPager();
+    }
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        _buildPager(),
+        Positioned.fill(
+          child: IgnorePointer(child: _buildChapterTurnOverlay(turn)),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildPager() => Semantics(
     onScrollLeft: () => unawaited(turnPage(1)),
     onScrollRight: () => unawaited(turnPage(-1)),
     child: NotificationListener<ScrollNotification>(
@@ -284,6 +382,59 @@ class ReaderPagedViewState extends State<ReaderPagedView> {
       ),
     ),
   );
+
+  /// Paints the animated chapter boundary: the outgoing page slides away while
+  /// the incoming page — whatever the rebuilt pagination now shows — slides in.
+  ///
+  /// Both pages are painted here instead of by the PageView because the turn
+  /// crosses a rebuild: the pager underneath has already been re-created for
+  /// the new chapter, so only an overlay can show both chapters at once.
+  Widget _buildChapterTurnOverlay(ReaderChapterTurn turn) {
+    final layout = widget.layout;
+    final pages = layout.pages;
+    if (pages.isEmpty) return const SizedBox.shrink();
+    final incoming = pages[widget.pageIndex.clamp(0, pages.length - 1)];
+    // 覆盖 keeps the outgoing page pinned and slides the new one over it;
+    // the slide style moves both.
+    final cover = widget.turnStyle == ReaderPageTurnStyle.cover;
+    final forward = turn.direction >= 0;
+    return AnimatedBuilder(
+      animation: _chapterTurnAnimation,
+      builder: (context, _) {
+        final t = Curves.easeOutCubic.transform(_chapterTurnAnimation.value);
+        final width =
+            _controller.hasClients && _controller.position.hasContentDimensions
+            ? _viewportWidth
+            : MediaQuery.sizeOf(context).width;
+        final outgoingShift = cover ? 0.0 : (forward ? -width * t : width * t);
+        final incomingShift = (forward ? 1 - t : t - 1) * width;
+        return Stack(
+          fit: StackFit.expand,
+          children: [
+            ColoredBox(color: widget.backgroundColor),
+            Transform.translate(
+              offset: Offset(outgoingShift, 0),
+              child: _buildTurnPage(turn.page, turn.spec),
+            ),
+            Transform.translate(
+              offset: Offset(incomingShift, 0),
+              child: _buildTurnPage(incoming, layout.spec),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _buildTurnPage(ReaderTextPage page, ReaderLayoutSpec spec) =>
+      ColoredBox(
+        color: widget.backgroundColor,
+        child: ReaderPageContent(
+          page: page,
+          spec: spec,
+          imageProviderFactory: widget.imageProviderFactory,
+        ),
+      );
 }
 
 class ReaderPageContent extends StatelessWidget {

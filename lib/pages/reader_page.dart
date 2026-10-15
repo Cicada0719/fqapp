@@ -252,11 +252,18 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
   bool _routeCurrent = false;
   bool _changingChapter = false;
 
+  /// Chapter-boundary transition handed to [ReaderPagedView]; see
+  /// [ReaderChapterTurn]. Set by [_next] / [_prev] and cleared once the slide
+  /// finishes, or when the chapter fails to load.
+  // Note: .agents/notes/implemented/bug-fix/2026-10-15-reader-chapter-turn-animation.md
+  ReaderChapterTurn? _chapterTurnRequest;
+
   /// Height of the reader's own bottom toolbar (目录/夜间/听书/设置) as measured
   /// on device, including its safe-area inset. The paragraph action bar keeps
   /// clear of it so a long press near the page foot flips above the line
   /// instead of landing on top of the controls.
   static const _bottomBarHeight = 74.0;
+
   /// Set while 从本段听 is waiting on a timeline fetch, so a repeated long-press
   /// cannot stack a second listening page (and a second player) on top.
   bool _openingListening = false;
@@ -957,7 +964,10 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _load({bool startAtEnd = false}) async {
+  Future<void> _load({
+    bool startAtEnd = false,
+    ReaderChapterTurn? chapterTurn,
+  }) async {
     if (widget.chapters.isEmpty) return;
     final generation = ++_loadGeneration;
     final chapter = _chapter;
@@ -975,6 +985,7 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
       _needsRestore = true;
       _requestedStartAtEnd = startAtEnd;
       _sessionActive = false;
+      _chapterTurnRequest = chapterTurn;
     });
     if (_scrollController.hasClients) _scrollController.jumpTo(0);
 
@@ -1020,6 +1031,7 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
       setState(() {
         _error = '$e';
         _loading = false;
+        _chapterTurnRequest = null;
       });
     }
   }
@@ -1533,6 +1545,28 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
     }
   }
 
+  /// Captures the page on screen so a chapter boundary can animate. Returns
+  /// null when paging is off or the reader is set to turn without animation.
+  ReaderChapterTurn? _captureChapterTurn(int direction) {
+    if (!_paged || _preferences.pageTurnStyle == ReaderPageTurnStyle.none) {
+      return null;
+    }
+    final layout = _chapterLayout;
+    if (layout == null || layout.pages.isEmpty) return null;
+    return ReaderChapterTurn(
+      direction: direction,
+      page: layout.pages[_pageIndex.clamp(0, layout.pages.length - 1)],
+      spec: layout.spec,
+    );
+  }
+
+  /// The boundary slide finished: drop the overlay so the rebuilt pagination
+  /// shows through. The chapter switch itself was already committed.
+  void _onChapterTurnCompleted() {
+    if (!mounted || _chapterTurnRequest == null) return;
+    setState(() => _chapterTurnRequest = null);
+  }
+
   Future<void> _persistProgress({bool createHistory = false}) async {
     if (!_progressReady) return;
     // The scrollable may already be detached when the reader is disposed.
@@ -1594,8 +1628,9 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
       _settleReadTime();
       await _persistProgress();
       if (!mounted) return;
+      final turn = _captureChapterTurn(-1);
       setState(() => _index--);
-      await _load(startAtEnd: startAtEnd);
+      await _load(startAtEnd: startAtEnd, chapterTurn: turn);
     } finally {
       _changingChapter = false;
     }
@@ -1612,8 +1647,9 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
       _settleReadTime();
       await _persistProgress();
       if (!mounted) return;
+      final turn = _captureChapterTurn(1);
       setState(() => _index++);
-      await _load();
+      await _load(chapterTurn: turn);
     } finally {
       _changingChapter = false;
     }
@@ -2194,6 +2230,20 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
   );
 
   Widget _buildContent(ReaderThemePreset preset, EdgeInsets windowPadding) {
+    final chapterTurn = _chapterTurnRequest;
+    if (_loading && chapterTurn != null) {
+      // Keep the outgoing page on screen while the neighbouring chapter loads,
+      // so the boundary slides instead of flashing the loading spinner.
+      return GestureDetector(
+        behavior: HitTestBehavior.translucent,
+        onTap: _toggleControls,
+        child: ReaderPageContent(
+          page: chapterTurn.page,
+          spec: chapterTurn.spec,
+          imageProviderFactory: widget.imageProviderFactory,
+        ),
+      );
+    }
     if (_loading || _error != null) {
       return GestureDetector(
         behavior: HitTestBehavior.translucent,
@@ -2254,6 +2304,8 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
                             ? _buildChapterEndPage(preset)
                             : null,
                         onBookEnd: _stopAutoTurn,
+                        chapterTurn: _chapterTurnRequest,
+                        onChapterTurnCompleted: _onChapterTurnCompleted,
                         imageProviderFactory: widget.imageProviderFactory,
                         onParagraphLongPress: (block, position) =>
                             unawaited(_onParagraphLongPress(block, position)),
